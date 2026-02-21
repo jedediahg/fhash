@@ -154,11 +154,16 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt
                 continue;
             }
 
-            char file_path[MAX_PATH_LENGTH];
-            snprintf(file_path, sizeof(file_path), "%s/%s", current_path, entry->d_name);
+            char *file_path = NULL;
+            if (asprintf(&file_path, "%s/%s", current_path, entry->d_name) == -1) {
+                fprintf(stderr, "Memory: Error allocating path for %s\n", entry->d_name);
+                continue;
+            }
+
             struct stat st;
             if (lstat(file_path, &st) == -1) {
                 fprintf(stderr, "OS: Error getting file information for %s: %m\n", file_path);
+                free(file_path);
                 continue;
             }
 
@@ -210,6 +215,7 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt
             } else if (S_ISDIR(st.st_mode) && recurse_dirs) {
                 push_dir(stack, file_path);
             }
+            free(file_path);
         }
         closedir(dir);
     }
