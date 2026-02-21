@@ -369,16 +369,41 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
 int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sqlite3_stmt *update_stmt, int *file_count, int verbose, char *extensions_concatenated, int force_rescan, int *batch_count, int hash_files, int hash_audio, int recurse_dirs) {
     DirStack *stack = create_dir_stack(STACK_SIZE); 
     push_dir(stack, dir_path);
+
+    // Parse extension list once
+    char **ext_list = NULL;
+    int ext_count = 0;
+    if (extensions_concatenated && strlen(extensions_concatenated) > 0) {
+        char *ext_copy = strdup(extensions_concatenated);
+        char *token = strtok(ext_copy, ",");
+        while (token) {
+            ext_list = realloc(ext_list, sizeof(char *) * (ext_count + 1));
+            ext_list[ext_count++] = strdup(token);
+            token = strtok(NULL, ",");
+        }
+        free(ext_copy);
+    }
+
+    sqlite3_stmt *select_stmt;
+    const char *select_sql = "SELECT filepath FROM files WHERE filepath = ?;";
+    if (sqlite3_prepare_v2(db, select_sql, -1, &select_stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL: Error preparing select statement: %s\n", sqlite3_errmsg(db));
+        for (int i = 0; i < ext_count; i++) free(ext_list[i]);
+        free(ext_list);
+        destroy_dir_stack(stack);
+        return 1;
+    }
+
     while (stack->size > 0) {
         char current_path[MAX_PATH_LENGTH]; 
         strcpy(current_path, pop_dir(stack));
         if (verbose) {
-                printf("Current Path: %s\n",current_path);
-            }
+            printf("Current Path: %s\n", current_path);
+        }
         DIR *dir = opendir(current_path);
         if (!dir) {
             fprintf(stderr, "OS: Error opening directory %s: %m\n", current_path);
-            continue; // Skip this directory instead of failing entirely
+            continue;
         }
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
@@ -393,82 +418,62 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt
                 fprintf(stderr, "OS: Error getting file information for %s: %m\n", file_path);
                 continue;
             }
+
             if (S_ISREG(st.st_mode)) {
-                // ... (existing logic for extension check and action determination)
-                // Process regular file
-                if (verbose) {
-                        printf("File: %s\n", file_path);
-                    }
                 char *filename = entry->d_name;
-                char *extension;
-                int exists_in_db = 0 ;
-
-                for (int i = strlen(filename) - 1; i >= 0; i--) {
-                    if (filename[i] == '.' || filename[i] == '/') {
-                        extension = &filename[i + 1];
-                        break;
-                    }
-                }
-
-                if (extension && strstr(extensions_concatenated, extension)) {
-                    int action = 0; // No action by default
-                    sqlite3_stmt *stmt;
-                    char sql[MAX_PATH_LENGTH+128];
-                    sprintf(sql,"SELECT filepath FROM files WHERE filepath = ?;");
-                    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-                        fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
-                        return 1;
+                char *extension = strrchr(filename, '.');
+                if (extension) {
+                    extension++; // Skip the dot
+                    
+                    int match = 0;
+                    for (int i = 0; i < ext_count; i++) {
+                        if (strcasecmp(ext_list[i], extension) == 0) {
+                            match = 1;
+                            break;
                         }
-                    // Execute the SQL statement
-                    if (sqlite3_bind_text(stmt, 1, file_path, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-                    fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
-                    return 1;
                     }
-                    int result = sqlite3_step(stmt);
-                    if (result == SQLITE_ROW) {
-                            // If a row is returned, it means the record exists
-                        if (force_rescan) {
-                            action = UPDATE_ACTION;
-                        }
-                    } else if (result == SQLITE_DONE) {
-                        // If no row is returned, the record doesn't exist
-                        action = INSERT_ACTION;
-                    } else {
-                        // Handle other errors
-                        fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
-                        sqlite3_finalize(stmt);
-                        return 1;
-                    }
-                    sqlite3_finalize(stmt);
 
-                    if (action > 0) {
-                        if(process_file(file_path, db, bulk_stmt, update_stmt, file_count, verbose, hash_files, hash_audio, action)!=0){
-                            fprintf(stderr,"Process_file returned an error on action %d on file %s",action, file_path);
-                            return 1;
+                    if (match) {
+                        int action = 0;
+                        sqlite3_bind_text(select_stmt, 1, file_path, -1, SQLITE_TRANSIENT);
+                        int result = sqlite3_step(select_stmt);
+                        if (result == SQLITE_ROW) {
+                            if (force_rescan) {
+                                action = UPDATE_ACTION;
+                            }
+                        } else if (result == SQLITE_DONE) {
+                            action = INSERT_ACTION;
                         } else {
-                            (*batch_count)++;
-                            if (verbose) {
-                                printf("Process file complete. Batch count at %d\n",*batch_count);
+                            fprintf(stderr, "SQL: Error during select: %s\n", sqlite3_errmsg(db));
+                        }
+                        sqlite3_reset(select_stmt);
+                        sqlite3_clear_bindings(select_stmt);
+
+                        if (action > 0) {
+                            if (process_file(file_path, db, bulk_stmt, update_stmt, file_count, verbose, hash_files, hash_audio, action) != 0) {
+                                fprintf(stderr, "Error processing file: %s\n", file_path);
+                            } else {
+                                (*batch_count)++;
                             }
                         }
-                    }
-                    if (*batch_count >= BATCH_SIZE) {
-                        commit_transaction(db);
-                        begin_transaction(db);
-                        *batch_count = 0;
+
+                        if (*batch_count >= BATCH_SIZE) {
+                            commit_transaction(db);
+                            begin_transaction(db);
+                            *batch_count = 0;
+                        }
                     }
                 }
             } else if (S_ISDIR(st.st_mode) && recurse_dirs) {
-                // Push subdirectory onto the stack for processing
-                 if (verbose) {
-                        printf("Dir: %s\n", file_path);
-                    }
                 push_dir(stack, file_path);
             }
         }
         closedir(dir);
     }
 
+    sqlite3_finalize(select_stmt);
+    for (int i = 0; i < ext_count; i++) free(ext_list[i]);
+    free(ext_list);
     destroy_dir_stack(stack);
     return 0;
 }
