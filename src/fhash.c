@@ -268,22 +268,21 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
             }
         }
     } else {
-        sprintf(md5_string,"Not calculated");
+        snprintf(md5_string, sizeof(md5_string), "Not calculated");
     }
 
     char audio_md5_string[MD5_DIGEST_LENGTH * 2 + 1] = {0};
     if (hash_audio) {
         unsigned char audio_md5_hash[MD5_DIGEST_LENGTH];
         if (calculate_audio_md5(file_path, audio_md5_hash) != 0) {
-            // If it's not an audio file or error, we might want to just skip or mark as N/A
-            sprintf(audio_md5_string, "N/A");
+            snprintf(audio_md5_string, sizeof(audio_md5_string), "N/A");
         } else {
             for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
                 snprintf(&audio_md5_string[i * 2], 3, "%02x", (unsigned int)audio_md5_hash[i]);
             }
         }
     } else {
-        sprintf(audio_md5_string, "Not calculated");
+        snprintf(audio_md5_string, sizeof(audio_md5_string), "Not calculated");
     }
 
     const char *filename = strrchr(file_path, '/');
@@ -292,11 +291,11 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
     extension = (extension != NULL) ? (extension + 1) : "";
     struct stat st;
     if (stat(file_path, &st) != 0) {
-        fprintf(stderr, "Error getting file information for file: %s\n", file_path);
+        fprintf(stderr, "OS: Error getting file information for %s: %m\n", file_path);
         return 1;
     }
 
-    int filesize = st.st_size;
+    int64_t filesize = (int64_t)st.st_size;
     time_t current_time = time(NULL);
 
     if (verbose) {
@@ -305,40 +304,19 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
         printf("\tFilepath: %s\n", file_path);
         printf("\tFilename: %s\n", filename);
         printf("\tExtension: %s\n", extension);
-        printf("\tFilesize: %d\n", filesize);
+        printf("\tFilesize: %ld\n", (long)filesize);
         printf("\tTimestamp: %ld\n", (long)current_time);
     }
 
     sqlite3_stmt *stmt = (action == INSERT_ACTION) ? bulk_stmt : update_stmt;
     if (action == INSERT_ACTION) {
-        if (sqlite3_bind_text(stmt, 1, md5_string, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-            fprintf(stderr, "SQL: Error binding MD5 for %s: %s\n", file_path, sqlite3_errmsg(db));
-            return 1;
-        }
-        if (sqlite3_bind_text(stmt, 2, audio_md5_string, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-            fprintf(stderr, "SQL: Error binding Audio MD5 for %s: %s\n", file_path, sqlite3_errmsg(db));
-            return 1;
-        }
-        if (sqlite3_bind_text(stmt, 3, file_path, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-            fprintf(stderr, "SQL: Error binding filepath for %s: %s\n", file_path, sqlite3_errmsg(db));
-            return 1;
-        }
-        if (sqlite3_bind_text(stmt, 4, filename, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-            fprintf(stderr, "SQL: Error binding filename for %s: %s\n", file_path, sqlite3_errmsg(db));
-            return 1;
-        }
-        if (sqlite3_bind_text(stmt, 5, extension, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-            fprintf(stderr, "SQL: Error binding extension for %s: %s\n", file_path, sqlite3_errmsg(db));
-            return 1;
-        }
-        if (sqlite3_bind_int(stmt, 6, filesize)!=SQLITE_OK) {
-            fprintf(stderr, "SQL: Error binding filesize for %s: %s\n", file_path, sqlite3_errmsg(db));
-            return 1;
-        }
-        if (sqlite3_bind_int64(stmt, 7, current_time)!=SQLITE_OK) {
-            fprintf(stderr, "SQL: Error binding timestamp for %s: %s\n", file_path, sqlite3_errmsg(db));
-            return 1;
-        }
+        sqlite3_bind_text(stmt, 1, md5_string, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, audio_md5_string, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, file_path, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, filename, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 5, extension, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 6, filesize);
+        sqlite3_bind_int64(stmt, 7, current_time);
     } else if (action == UPDATE_ACTION) {
         int param_idx = 1;
         if (hash_file) {
@@ -347,7 +325,7 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
         if (hash_audio) {
             sqlite3_bind_text(stmt, param_idx++, audio_md5_string, -1, SQLITE_TRANSIENT);
         }
-        sqlite3_bind_int(stmt, param_idx++, filesize);
+        sqlite3_bind_int64(stmt, param_idx++, filesize);
         sqlite3_bind_int64(stmt, param_idx++, current_time);
         sqlite3_bind_text(stmt, param_idx++, file_path, -1, SQLITE_TRANSIENT);
     }
@@ -366,7 +344,7 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
 }
 
 
-int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sqlite3_stmt *update_stmt, int *file_count, int verbose, char *extensions_concatenated, int force_rescan, int *batch_count, int hash_files, int hash_audio, int recurse_dirs) {
+int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sqlite3_stmt *update_stmt, int *file_count, int verbose, const char *extensions_concatenated, int force_rescan, int *batch_count, int hash_files, int hash_audio, int recurse_dirs) {
     DirStack *stack = create_dir_stack(STACK_SIZE); 
     push_dir(stack, dir_path);
 
@@ -377,7 +355,12 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt
         char *ext_copy = strdup(extensions_concatenated);
         char *token = strtok(ext_copy, ",");
         while (token) {
-            ext_list = realloc(ext_list, sizeof(char *) * (ext_count + 1));
+            char **tmp = realloc(ext_list, sizeof(char *) * (ext_count + 1));
+            if (!tmp) {
+                fprintf(stderr, "Memory: Error reallocating extension list\n");
+                break; 
+            }
+            ext_list = tmp;
             ext_list[ext_count++] = strdup(token);
             token = strtok(NULL, ",");
         }
@@ -563,6 +546,13 @@ int main(int argc, char *argv[]) {
     if (argc != arg_index) {
         printf("Error, unkown options, %s:", USAGE_TEXT);
         return 1;
+    }
+
+    // Configure FFmpeg logging
+    if (verbose) {
+        av_log_set_level(AV_LOG_INFO);
+    } else {
+        av_log_set_level(AV_LOG_ERROR);
     }
 
     char resolved_dir[PATH_MAX];
