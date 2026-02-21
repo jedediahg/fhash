@@ -44,27 +44,36 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
     int ret;
 
     if ((ret = avformat_open_input(&fmt_ctx, file_path, NULL, NULL)) < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        fprintf(stderr, "FFmpeg: Error opening input file %s: %s\n", file_path, errbuf);
         return -1;
     }
 
     if ((ret = avformat_find_stream_info(fmt_ctx, NULL)) < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        fprintf(stderr, "FFmpeg: Error finding stream info for %s: %s\n", file_path, errbuf);
         avformat_close_input(&fmt_ctx);
         return -1;
     }
 
     int audio_stream_idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
     if (audio_stream_idx < 0) {
+        // Not necessarily an error, just no audio stream found
         avformat_close_input(&fmt_ctx);
         return -1;
     }
 
     EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
     if (!mdctx) {
+        fprintf(stderr, "OpenSSL: Error creating MD context for %s\n", file_path);
         avformat_close_input(&fmt_ctx);
         return -1;
     }
 
     if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1) {
+        fprintf(stderr, "OpenSSL: Error initializing MD5 for %s\n", file_path);
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
         return -1;
@@ -72,14 +81,16 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
 
     AVPacket *pkt = av_packet_alloc();
     if (!pkt) {
+        fprintf(stderr, "FFmpeg: Error allocating packet for %s\n", file_path);
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
         return -1;
     }
 
-    while (av_read_frame(fmt_ctx, pkt) >= 0) {
+    while ((ret = av_read_frame(fmt_ctx, pkt)) >= 0) {
         if (pkt->stream_index == audio_stream_idx) {
             if (EVP_DigestUpdate(mdctx, pkt->data, pkt->size) != 1) {
+                fprintf(stderr, "OpenSSL: Error updating MD5 for %s\n", file_path);
                 av_packet_free(&pkt);
                 EVP_MD_CTX_free(mdctx);
                 avformat_close_input(&fmt_ctx);
@@ -89,7 +100,18 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         av_packet_unref(pkt);
     }
 
+    if (ret != AVERROR_EOF && ret < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        fprintf(stderr, "FFmpeg: Error reading frame from %s: %s\n", file_path, errbuf);
+        av_packet_free(&pkt);
+        EVP_MD_CTX_free(mdctx);
+        avformat_close_input(&fmt_ctx);
+        return -1;
+    }
+
     if (EVP_DigestFinal_ex(mdctx, md5_hash, NULL) != 1) {
+        fprintf(stderr, "OpenSSL: Error finalizing MD5 for %s\n", file_path);
         av_packet_free(&pkt);
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
@@ -159,17 +181,13 @@ void destroy_dir_stack(DirStack *stack) {
 int calculate_md5(const char *file_path, unsigned char *md5_hash) {
     int fd = open(file_path, O_RDONLY);
     if (fd == -1) {
-	char errmsg[MAX_PATH_LENGTH+128];
-	sprintf(errmsg,"Error opening file %s:",file_path);
-        perror((const char*)errmsg);
+        fprintf(stderr, "OS: Error opening file %s: %m\n", file_path);
         return -1;
     }
 
     struct stat st;
     if (fstat(fd, &st) == -1) {
-	char errmsg[MAX_PATH_LENGTH+128];
-	sprintf(errmsg,"Error getting file information for %s:",file_path);
-        perror((const char*)errmsg);
+        fprintf(stderr, "OS: Error getting file information for %s: %m\n", file_path);
         close(fd);
         return -1;
     }
@@ -183,23 +201,23 @@ int calculate_md5(const char *file_path, unsigned char *md5_hash) {
 
     char *file_data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (file_data == MAP_FAILED) {
-        perror("Error mapping file to memory");
+        fprintf(stderr, "OS: Error mapping file %s to memory: %m\n", file_path);
         close(fd);
         return -1;
     }
 
     EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
     if (!mdctx) {
+        fprintf(stderr, "OpenSSL: Error creating MD context for %s\n", file_path);
         munmap(file_data, file_size);
         close(fd);
-        fprintf(stderr, "Error creating MD context\n");
         return -1;
     }
 
     if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1 ||
         EVP_DigestUpdate(mdctx, file_data, file_size) != 1 ||
         EVP_DigestFinal_ex(mdctx, md5_hash, NULL) != 1) {
-        fprintf(stderr, "Error calculating MD5 hash\n");
+        fprintf(stderr, "OpenSSL: Error calculating MD5 hash for %s\n", file_path);
         EVP_MD_CTX_free(mdctx);
         munmap(file_data, file_size);
         close(fd);
@@ -294,31 +312,31 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
     sqlite3_stmt *stmt = (action == INSERT_ACTION) ? bulk_stmt : update_stmt;
     if (action == INSERT_ACTION) {
         if (sqlite3_bind_text(stmt, 1, md5_string, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-            fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+            fprintf(stderr, "SQL: Error binding MD5 for %s: %s\n", file_path, sqlite3_errmsg(db));
             return 1;
         }
         if (sqlite3_bind_text(stmt, 2, audio_md5_string, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-            fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+            fprintf(stderr, "SQL: Error binding Audio MD5 for %s: %s\n", file_path, sqlite3_errmsg(db));
             return 1;
         }
         if (sqlite3_bind_text(stmt, 3, file_path, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-            fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+            fprintf(stderr, "SQL: Error binding filepath for %s: %s\n", file_path, sqlite3_errmsg(db));
             return 1;
         }
         if (sqlite3_bind_text(stmt, 4, filename, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-            fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+            fprintf(stderr, "SQL: Error binding filename for %s: %s\n", file_path, sqlite3_errmsg(db));
             return 1;
         }
         if (sqlite3_bind_text(stmt, 5, extension, -1, SQLITE_TRANSIENT)!=SQLITE_OK) {
-            fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+            fprintf(stderr, "SQL: Error binding extension for %s: %s\n", file_path, sqlite3_errmsg(db));
             return 1;
         }
         if (sqlite3_bind_int(stmt, 6, filesize)!=SQLITE_OK) {
-            fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+            fprintf(stderr, "SQL: Error binding filesize for %s: %s\n", file_path, sqlite3_errmsg(db));
             return 1;
         }
         if (sqlite3_bind_int64(stmt, 7, current_time)!=SQLITE_OK) {
-            fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+            fprintf(stderr, "SQL: Error binding timestamp for %s: %s\n", file_path, sqlite3_errmsg(db));
             return 1;
         }
     } else if (action == UPDATE_ACTION) {
@@ -334,7 +352,7 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
         sqlite3_bind_text(stmt, param_idx++, file_path, -1, SQLITE_TRANSIENT);
     }
     if (sqlite3_step(stmt) != SQLITE_DONE) {
-        fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+        fprintf(stderr, "SQL: Error executing statement for %s: %s\n", file_path, sqlite3_errmsg(db));
         return 1;
     } else {
         (*file_count)++;
@@ -359,16 +377,11 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt
             }
         DIR *dir = opendir(current_path);
         if (!dir) {
-            perror("Error opening directory");
-            destroy_dir_stack(stack);
-            return 1;
+            fprintf(stderr, "OS: Error opening directory %s: %m\n", current_path);
+            continue; // Skip this directory instead of failing entirely
         }
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
-            if (verbose) {
-                printf("Treating: %s\n",entry->d_name);
-                //printf("CP %s\n",current_path);
-            }
             if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
                 continue;
             }
@@ -376,13 +389,12 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt
             char file_path[MAX_PATH_LENGTH];
             snprintf(file_path, sizeof(file_path), "%s/%s", current_path, entry->d_name);
             struct stat st;
-            if (stat(file_path, &st) == -1) {
-		char errmsg[MAX_PATH_LENGTH+128];
-		sprintf(errmsg,"Error getting file information %s:",file_path);
-                perror((const char*)errmsg);
+            if (lstat(file_path, &st) == -1) {
+                fprintf(stderr, "OS: Error getting file information for %s: %m\n", file_path);
                 continue;
             }
             if (S_ISREG(st.st_mode)) {
+                // ... (existing logic for extension check and action determination)
                 // Process regular file
                 if (verbose) {
                         printf("File: %s\n", file_path);
