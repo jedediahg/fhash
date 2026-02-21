@@ -1,3 +1,5 @@
 fhash\n*.db\n*_dbg
 *.o
 fhash
+*.db
+*.journal
