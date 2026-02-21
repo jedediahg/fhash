@@ -1,250 +1,9 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <dirent.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <openssl/md5.h>
-#include <openssl/evp.h>
+#include "common.h"
+#include "utils.h"
+#include "hashing.h"
+#include "db.h"
 #include <sqlite3.h>
-#include <time.h>
-#include <limits.h>
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libavutil/avutil.h>
-
-#define MAX_PATH_LENGTH PATH_MAX
-#define MD5_DIGEST_LENGTH 16
-#define INSERT_ACTION 1
-#define UPDATE_ACTION 2
-#define BATCH_SIZE 1500
-#define STACK_SIZE 32000
-
-#define USAGE_TEXT "Usage: [-help] [-v] [-f] [-h] [-a] [-r] [-d <directory>] -s <startpath> -e <extensionlist>\n"
-
-void help() {
-    printf("-help\tshow this help\n");
-    printf("-v\tverbose output, default OFF\n");
-    printf("-f\tforce re-indexing of files, default OFF, without -h this only updates size and timestamp\n");
-    printf("-h\tcalculate MD5 hash of files, default OFF\n");
-    printf("-a\tcalculate MD5 hash of audio stream only, default OFF\n");
-    printf("-r\recurse directories, default OFF\n");
-    printf("-d\tuse the database at <dbpath> location, must include the db filename. Default: ./file_hashes.db\n");
-    printf("-s\tstart in <startpath>, this must be a directory\n");
-    printf("-e\tindex files with <extensionlist> extensions, default none, use csv format, e.g. jpeg,jpg,flac,mp3,doc\n");
-    printf("\n");
-}
-
-// Function to calculate MD5 hash of the audio stream only
-int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
-    AVFormatContext *fmt_ctx = NULL;
-    int ret;
-
-    if ((ret = avformat_open_input(&fmt_ctx, file_path, NULL, NULL)) < 0) {
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(ret, errbuf, sizeof(errbuf));
-        fprintf(stderr, "FFmpeg: Error opening input file %s: %s\n", file_path, errbuf);
-        return -1;
-    }
-
-    if ((ret = avformat_find_stream_info(fmt_ctx, NULL)) < 0) {
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(ret, errbuf, sizeof(errbuf));
-        fprintf(stderr, "FFmpeg: Error finding stream info for %s: %s\n", file_path, errbuf);
-        avformat_close_input(&fmt_ctx);
-        return -1;
-    }
-
-    int audio_stream_idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
-    if (audio_stream_idx < 0) {
-        // Not necessarily an error, just no audio stream found
-        avformat_close_input(&fmt_ctx);
-        return -1;
-    }
-
-    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-    if (!mdctx) {
-        fprintf(stderr, "OpenSSL: Error creating MD context for %s\n", file_path);
-        avformat_close_input(&fmt_ctx);
-        return -1;
-    }
-
-    if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1) {
-        fprintf(stderr, "OpenSSL: Error initializing MD5 for %s\n", file_path);
-        EVP_MD_CTX_free(mdctx);
-        avformat_close_input(&fmt_ctx);
-        return -1;
-    }
-
-    AVPacket *pkt = av_packet_alloc();
-    if (!pkt) {
-        fprintf(stderr, "FFmpeg: Error allocating packet for %s\n", file_path);
-        EVP_MD_CTX_free(mdctx);
-        avformat_close_input(&fmt_ctx);
-        return -1;
-    }
-
-    while ((ret = av_read_frame(fmt_ctx, pkt)) >= 0) {
-        if (pkt->stream_index == audio_stream_idx) {
-            if (EVP_DigestUpdate(mdctx, pkt->data, pkt->size) != 1) {
-                fprintf(stderr, "OpenSSL: Error updating MD5 for %s\n", file_path);
-                av_packet_free(&pkt);
-                EVP_MD_CTX_free(mdctx);
-                avformat_close_input(&fmt_ctx);
-                return -1;
-            }
-        }
-        av_packet_unref(pkt);
-    }
-
-    if (ret != AVERROR_EOF && ret < 0) {
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(ret, errbuf, sizeof(errbuf));
-        fprintf(stderr, "FFmpeg: Error reading frame from %s: %s\n", file_path, errbuf);
-        av_packet_free(&pkt);
-        EVP_MD_CTX_free(mdctx);
-        avformat_close_input(&fmt_ctx);
-        return -1;
-    }
-
-    if (EVP_DigestFinal_ex(mdctx, md5_hash, NULL) != 1) {
-        fprintf(stderr, "OpenSSL: Error finalizing MD5 for %s\n", file_path);
-        av_packet_free(&pkt);
-        EVP_MD_CTX_free(mdctx);
-        avformat_close_input(&fmt_ctx);
-        return -1;
-    }
-
-    av_packet_free(&pkt);
-    EVP_MD_CTX_free(mdctx);
-    avformat_close_input(&fmt_ctx);
-    return 0;
-}
-
-// DirStack structure
-
-typedef struct {
-    char path[MAX_PATH_LENGTH];
-} DirEntry;
-
-typedef struct {
-    DirEntry *entries;
-    int capacity;
-    int size;
-} DirStack;
-
-DirStack* create_dir_stack(int capacity) {
-    DirStack *stack = (DirStack*)malloc(sizeof(DirStack));
-    if (!stack) {
-        fprintf(stderr, "Memory allocation error\n");
-        exit(1);
-    }
-    stack->entries = (DirEntry*)malloc(capacity * sizeof(DirEntry));
-    if (!stack->entries) {
-        fprintf(stderr, "Memory allocation error\n");
-        free(stack);
-        exit(1);
-    }
-    stack->capacity = capacity;
-    stack->size = 0;
-    return stack;
-}
-
-void push_dir(DirStack *stack, const char *path) {
-    if (stack->size >= stack->capacity) {
-        fprintf(stderr, "Stack overflow\n");
-        exit(1);
-    }
-    strcpy(stack->entries[stack->size].path, path);
-    stack->size++;
-}
-
-char* pop_dir(DirStack *stack) {
-    if (stack->size <= 0) {
-        fprintf(stderr, "Stack underflow\n");
-        exit(1);
-    }
-    stack->size--;
-    return stack->entries[stack->size].path;
-}
-
-void destroy_dir_stack(DirStack *stack) {
-    free(stack->entries);
-    free(stack);
-}
-
-
-// Function to calculate MD5 hash of a file using memory mapping
-int calculate_md5(const char *file_path, unsigned char *md5_hash) {
-    int fd = open(file_path, O_RDONLY);
-    if (fd == -1) {
-        fprintf(stderr, "OS: Error opening file %s: %m\n", file_path);
-        return -1;
-    }
-
-    struct stat st;
-    if (fstat(fd, &st) == -1) {
-        fprintf(stderr, "OS: Error getting file information for %s: %m\n", file_path);
-        close(fd);
-        return -1;
-    }
-
-    off_t file_size = st.st_size;
-    if (file_size == 0) {
-        strncpy((char *)md5_hash, "0-byte-file", MD5_DIGEST_LENGTH * 2 + 1);
-        close(fd);
-        return 0;
-    }
-
-    char *file_data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (file_data == MAP_FAILED) {
-        fprintf(stderr, "OS: Error mapping file %s to memory: %m\n", file_path);
-        close(fd);
-        return -1;
-    }
-
-    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-    if (!mdctx) {
-        fprintf(stderr, "OpenSSL: Error creating MD context for %s\n", file_path);
-        munmap(file_data, file_size);
-        close(fd);
-        return -1;
-    }
-
-    if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1 ||
-        EVP_DigestUpdate(mdctx, file_data, file_size) != 1 ||
-        EVP_DigestFinal_ex(mdctx, md5_hash, NULL) != 1) {
-        fprintf(stderr, "OpenSSL: Error calculating MD5 hash for %s\n", file_path);
-        EVP_MD_CTX_free(mdctx);
-        munmap(file_data, file_size);
-        close(fd);
-        return -1;
-    }
-
-    EVP_MD_CTX_free(mdctx);
-    munmap(file_data, file_size);
-    close(fd);
-    return 0;
-}
-
-int begin_transaction(sqlite3 *db) {
-    if (sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL) != SQLITE_OK) {
-        fprintf(stderr, "Failed to begin transaction: %s\n", sqlite3_errmsg(db));
-        return 1; 
-    }
-    return 0; 
-}
-
-int commit_transaction(sqlite3 *db) {
-    if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
-        fprintf(stderr, "Failed to commit transaction: %s\n", sqlite3_errmsg(db));
-        return 1; 
-    }
-    return 0; 
-}
+#include <libavutil/log.h>
 
 int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sqlite3_stmt *update_stmt, int *file_count, int verbose, int hash_file, int hash_audio, int action) {
     if (action < 1 || action > 2){
@@ -343,7 +102,6 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
     return 0;
 }
 
-
 int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sqlite3_stmt *update_stmt, int *file_count, int verbose, const char *extensions_concatenated, int force_rescan, int *batch_count, int hash_files, int hash_audio, int recurse_dirs) {
     DirStack *stack = create_dir_stack(STACK_SIZE); 
     push_dir(stack, dir_path);
@@ -379,7 +137,9 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt
 
     while (stack->size > 0) {
         char current_path[MAX_PATH_LENGTH]; 
-        strcpy(current_path, pop_dir(stack));
+        strncpy(current_path, pop_dir(stack), MAX_PATH_LENGTH - 1);
+        current_path[MAX_PATH_LENGTH - 1] = '\0';
+
         if (verbose) {
             printf("Current Path: %s\n", current_path);
         }
@@ -481,38 +241,20 @@ int main(int argc, char *argv[]) {
     while (arg_index < argc) {
         if (strcmp(argv[arg_index], "-v") == 0) {
             verbose = 1;
-            if (verbose) {
-                printf("Set DB verbose: TRUE\n");
-            }
         } else if (strcmp(argv[arg_index], "-help") == 0) {
             help();
             return 0;
         } else if (strcmp(argv[arg_index], "-f") == 0) {
             force_rescan = 1;
-            if (verbose) {
-                printf("Set DB force rescan: TRUE\n");
-            }
         } else if (strcmp(argv[arg_index], "-h") == 0) {
             hash_files = 1;
-            if (verbose) {
-                printf("Set File Hashing: TRUE\n");
-            }
         } else if (strcmp(argv[arg_index], "-a") == 0) {
             hash_audio = 1;
-            if (verbose) {
-                printf("Set Audio Stream Hashing: TRUE\n");
-            }
         } else if (strcmp(argv[arg_index], "-r") == 0) {
             recurse_dirs = 1;
-            if (verbose) {
-                printf("Set Recurse Dirs: TRUE\n");
-            }
         } else if (strcmp(argv[arg_index], "-d") == 0) {
             if (arg_index + 1 < argc) {
                 database_path = argv[++arg_index];
-                if (verbose) {
-                    printf("Set DB Path: %s\n",database_path);
-                }
             } else {
                 printf("Error: Missing argument for -d option\n");
                 return 1;
@@ -520,9 +262,6 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[arg_index], "-s") == 0) {
             if (arg_index + 1 < argc) {
                 start_path = argv[++arg_index];
-                if (verbose) {
-                    printf("Set Start Path: %s\n",start_path);
-                }
             } else {
                 printf("Error: Missing argument for -s option\n");
                 return 1;
@@ -530,9 +269,6 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[arg_index], "-e") == 0) {
             if (arg_index + 1 < argc) {
                 extensions_concatenated = argv[++arg_index];
-                if (verbose) {
-                    printf("Set Extension List: %s\n",extensions_concatenated);
-                }
             } else {
                 printf("Error: Missing argument for -e option\n");
                 return 1;
@@ -548,7 +284,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Configure FFmpeg logging
     if (verbose) {
         av_log_set_level(AV_LOG_INFO);
     } else {
@@ -561,7 +296,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    const char *start_dir = resolved_dir;
     sqlite3 *db;
     if (sqlite3_open(database_path, &db) != SQLITE_OK) {
         fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
@@ -577,7 +311,7 @@ int main(int argc, char *argv[]) {
 
     if (begin_transaction(db) != 0) {
         sqlite3_close(db);
-        return 1; // Early exit if unable to begin the transaction
+        return 1;
     }
     const char *bulk_insert_sql = "INSERT OR IGNORE INTO files (md5, audio_md5, filepath, filename, extension, filesize, last_check_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt *bulk_stmt;
@@ -601,9 +335,8 @@ int main(int argc, char *argv[]) {
     if (!first) strcat(sqlroot, ", ");
     strcat(sqlroot, "filesize = ?, last_check_timestamp = ? WHERE filepath = ?;");
 
-    const char *bulk_update_sql = sqlroot;
     sqlite3_stmt *update_stmt;
-    if (sqlite3_prepare_v2(db, bulk_update_sql, -1, &update_stmt, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, sqlroot, -1, &update_stmt, NULL) != SQLITE_OK) {
         fprintf(stderr, "Failed to prepare update statement: %s\n", sqlite3_errmsg(db));
         sqlite3_close(db);
         return 1;
@@ -612,16 +345,14 @@ int main(int argc, char *argv[]) {
     int file_count = 0;
     int batch_count = 0;
 
-    if (process_directory(start_dir, db, bulk_stmt, update_stmt, &file_count, verbose, (char *) extensions_concatenated, force_rescan, &batch_count, hash_files, hash_audio, recurse_dirs)!=0){
-        perror("Process directory failed.\n");
-        mainret=1;
-    } 
-
-   // Ensure any open transaction is committed at the end
-    if (commit_transaction(db) != 0) {
-        fprintf(stderr, "Unable to commit transaction.\n");
-        mainret=1;
+    if (process_directory(resolved_dir, db, bulk_stmt, update_stmt, &file_count, verbose, extensions_concatenated, force_rescan, &batch_count, hash_files, hash_audio, recurse_dirs) != 0) {
+        mainret = 1;
     }
+
+    if (commit_transaction(db) != 0) {
+        mainret = 1;
+    }
+
     sqlite3_finalize(bulk_stmt);
     sqlite3_finalize(update_stmt);
     sqlite3_close(db);

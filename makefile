@@ -1,10 +1,10 @@
 CC = gcc
-CFLAGS = -O3 -Wall
+CFLAGS = -O3 -Wall -Iinclude
 LDFLAGS = -lsqlite3 -lcrypto -lavformat -lavcodec -lavutil
 PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
 
-SRC = src/fhash.c
+SRC = src/fhash.c src/utils.c src/hashing.c src/db.c
 OBJ = $(SRC:.c=.o)
 TARGET = fhash
 
@@ -12,11 +12,14 @@ TARGET = fhash
 
 all: $(TARGET)
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
+$(TARGET): $(OBJ)
+	$(CC) $(CFLAGS) $(OBJ) -o $(TARGET) $(LDFLAGS)
 
-debug:
-	$(CC) -g -O0 $(SRC) -o $(TARGET)_dbg $(LDFLAGS)
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+debug: CFLAGS += -g -O0
+debug: all
 
 install: all
 	install -d $(DESTDIR)$(BINDIR)
@@ -26,4 +29,4 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(TARGET)
 
 clean:
-	rm -f $(TARGET) $(TARGET)_dbg *.db
+	rm -f $(TARGET) $(TARGET)_dbg $(OBJ) *.db

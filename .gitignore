@@ -1,1 +1,2 @@
 fhash\n*.db\n*_dbg
+*.o
