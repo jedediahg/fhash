@@ -54,6 +54,7 @@ sudo make uninstall
 
 ```bash
 ./fhash [-help] [-v] [-f] [-h] [-a] [-r] [-d <dbpath>] -s <startpath> -e <extensionlist>
+./fhash [-help] [-v] [-d <dbpath>] -xa<n> | -xh<n>
 ```
 
 ### Options:
@@ -67,6 +68,23 @@ sudo make uninstall
 - `-d <dbpath>`: Path to the SQLite database (default: `./file_hashes.db`).
 - `-s <startpath>`: The directory to start scanning from.
 - `-e <extensionlist>`: Comma-separated list of extensions to index (e.g., `mp3,flac,wav`).
+- `-xa<n>`: List files with duplicate `audio_md5` values already in the database (minimum group size `n`, default 2).
+- `-xh<n>`: List files with duplicate file `md5` values already in the database (alias: `-xf<n>`, minimum group size `n`, default 2).
+
+**Duplicate listing notes**
+- `-xa` and `-xh/-xf` are mutually exclusive and cannot be combined with `-h`, `-a`, `-f`, or `-s`. These commands only read the existing database and output paths sorted by hash, with a blank line separating each hash group.
+  
+**Examples:**
+
+List file-hash duplicates with at least 3 copies:
+```bash
+./fhash -xh3
+```
+
+List audio-hash duplicates (groups of 2 or more, default):
+```bash
+./fhash -xa
+```
 
 ### Examples:
 
