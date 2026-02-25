@@ -240,8 +240,10 @@ int main(int argc, char *argv[]) {
     int hash_files = 0;
     int hash_audio = 0;
     int recurse_dirs = 0;
+    int dupe_mode = 0;
+    int min_dupes = 2;
     char *database_path = "./file_hashes.db";
-    char *start_path = ".";
+    char *start_path = NULL;
     char *extensions_concatenated = "";
 
     while (arg_index < argc) {
@@ -258,6 +260,19 @@ int main(int argc, char *argv[]) {
             hash_audio = 1;
         } else if (strcmp(argv[arg_index], "-r") == 0) {
             recurse_dirs = 1;
+        } else if (strncmp(argv[arg_index], "-xa", 3) == 0 ||
+                   strncmp(argv[arg_index], "-xh", 3) == 0 ||
+                   strncmp(argv[arg_index], "-xf", 3) == 0) {
+            int requested_mode = (argv[arg_index][2] == 'a') ? DUPE_AUDIO : DUPE_FILE;
+            if (dupe_mode != 0 && dupe_mode != requested_mode) {
+                fprintf(stderr, "Error: Duplicate listing flags are mutually exclusive (-xa vs -xh/-xf)\n");
+                return 1;
+            }
+            dupe_mode = requested_mode;
+            if (strlen(argv[arg_index]) > 3) {
+                int candidate = atoi(argv[arg_index] + 3);
+                min_dupes = (candidate > 1) ? candidate : min_dupes;
+            }
         } else if (strcmp(argv[arg_index], "-d") == 0) {
             if (arg_index + 1 < argc) {
                 database_path = argv[++arg_index];
@@ -290,21 +305,33 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (verbose) {
-        av_log_set_level(AV_LOG_INFO);
-    } else {
-        av_log_set_level(AV_LOG_ERROR);
-    }
-
-    char resolved_dir[PATH_MAX];
-    if (realpath(start_path, resolved_dir) == NULL) {
-        perror("Error resolving directory path");
+    // Check for mutual exclusivity
+    if (dupe_mode != 0 && (hash_files || hash_audio || force_rescan || start_path != NULL)) {
+        fprintf(stderr, "Error: Duplicate listing flags (-xa, -xh/-xf) cannot be used with scanning flags (-h, -a, -f, -s)\n");
         return 1;
     }
+
+    init_logging_callback(verbose);
 
     sqlite3 *db;
     if (sqlite3_open(database_path, &db) != SQLITE_OK) {
         fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+
+    if (dupe_mode != 0) {
+        print_duplicates(db, dupe_mode, min_dupes);
+        sqlite3_close(db);
+        return 0;
+    }
+
+    // Normal scanning mode
+    if (start_path == NULL) start_path = ".";
+
+    char resolved_dir[PATH_MAX];
+    if (realpath(start_path, resolved_dir) == NULL) {
+        perror("Error resolving directory path");
+        sqlite3_close(db);
         return 1;
     }
 
@@ -344,6 +371,7 @@ int main(int argc, char *argv[]) {
     sqlite3_stmt *update_stmt;
     if (sqlite3_prepare_v2(db, sqlroot, -1, &update_stmt, NULL) != SQLITE_OK) {
         fprintf(stderr, "Failed to prepare update statement: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(bulk_stmt);
         sqlite3_close(db);
         return 1;
     }

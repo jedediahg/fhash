@@ -22,6 +22,6 @@
 #define BATCH_SIZE 1500
 #define STACK_SIZE 32000
 
-#define USAGE_TEXT "Usage: [-help] [-v] [-f] [-h] [-a] [-r] [-d <directory>] -s <startpath> -e <extensionlist>\n"
+#define USAGE_TEXT "Usage: [-help] [-v] [-f] [-h] [-a] [-r] [-d <directory>] [-s <startpath>] [-e <extensionlist>] [-xa<n>] [-xh<n>]\n"
 
 #endif
