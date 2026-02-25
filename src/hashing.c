@@ -3,7 +3,13 @@
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
 
+char current_processing_file[MAX_PATH_LENGTH] = {0};
+
 int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
+    // Set current file for FFmpeg logging
+    strncpy(current_processing_file, file_path, MAX_PATH_LENGTH - 1);
+    current_processing_file[MAX_PATH_LENGTH - 1] = '\0';
+
     AVFormatContext *fmt_ctx = NULL;
     int ret;
 
@@ -84,6 +90,8 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
     av_packet_free(&pkt);
     EVP_MD_CTX_free(mdctx);
     avformat_close_input(&fmt_ctx);
+    // Clear context
+    current_processing_file[0] = '\0';
     return 0;
 }
 
