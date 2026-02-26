@@ -59,7 +59,7 @@ run_step "dupe by file hash" "${ROOT}/fhash" dupe -v -xh2 -s "${WORK}" -r -e mp3
 run_step "dupe by audio hash" "${ROOT}/fhash" dupe -v -xa2 -s "${WORK}" -r -e mp3 -d "${DB}"
 
 # 4) Link dry-run on dupes folder (file-hash mode) to show planned hardlinks
-run_step "link dry-run (file hash, shallowest)" "${ROOT}/fhash" link -v -xh2 -ls -s "${WORK}/dupes" -r -e mp3 -d "${DB}" -dry
+run_step "link dry-run (file hash, shallowest)" "${ROOT}/fhash" link -v -xh2 -ls -s "${WORK}" -r -e mp3 -d "${DB}" -dry
 
 # 5) Sentinel coverage check for 0-byte and bad-audio entries
 run_step "sentinel rows check" sqlite3 "${DB}" "SELECT filename, md5, audio_md5 FROM files WHERE md5='0-byte-file' OR audio_md5='Bad audio' ORDER BY filename;"
