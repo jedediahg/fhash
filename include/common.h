@@ -22,6 +22,6 @@
 #define BATCH_SIZE 1500
 #define STACK_SIZE 32000
 
-#define USAGE_TEXT "Usage: fhash <scan|dupe|link> [options]\n"
+#define USAGE_TEXT "Usage: fhash <scan|dupe|link> [options]. fhash -help for more information.\n"
 
 #endif
