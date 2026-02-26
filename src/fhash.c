@@ -16,23 +16,9 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
     }
 
     char md5_string[MD5_DIGEST_LENGTH * 2 + 1] = {0};
-    if (hash_file) {
-        unsigned char md5_hash[MD5_DIGEST_LENGTH];
-        if (calculate_md5(file_path, md5_hash) != 0) {
-            fprintf(stderr, "Error calculating MD5 hash for file: %s\n", file_path);
-            return 1;
-        }
-
-        if (strcmp((char *)md5_hash, "0-byte-file") == 0) {
-            strncpy(md5_string, "0-byte-file", sizeof(md5_string));
-        } else {
-            for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
-                snprintf(&md5_string[i * 2], 3, "%02x", (unsigned int)md5_hash[i]);
-            }
-        }
-    } else {
-        snprintf(md5_string, sizeof(md5_string), "Not calculated");
-    }
+    char audio_md5_string[MD5_DIGEST_LENGTH * 2 + 1] = {0};
+    snprintf(md5_string, sizeof(md5_string), "Not calculated");
+    snprintf(audio_md5_string, sizeof(audio_md5_string), "Not calculated");
 
     const char *filename = strrchr(file_path, '/');
     filename = (filename != NULL) ? (filename + 1) : file_path;
@@ -47,11 +33,27 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
     int64_t filesize = (int64_t)st.st_size;
     time_t current_time = time(NULL);
 
-    char audio_md5_string[MD5_DIGEST_LENGTH * 2 + 1] = {0};
-    if (hash_audio) {
-        if (filesize == 0 && strcmp(md5_string, "0-byte-file") == 0) {
-            snprintf(audio_md5_string, sizeof(audio_md5_string), "0-byte-file");
-        } else {
+    if (filesize == 0) {
+        if (hash_file) strncpy(md5_string, "0-byte-file", sizeof(md5_string) - 1);
+        if (hash_audio) strncpy(audio_md5_string, "0-byte-file", sizeof(audio_md5_string) - 1);
+    } else {
+        if (hash_file) {
+            unsigned char md5_hash[MD5_DIGEST_LENGTH];
+            if (calculate_md5(file_path, md5_hash) != 0) {
+                fprintf(stderr, "Error calculating MD5 hash for file: %s\n", file_path);
+                return 1;
+            }
+
+            if (strcmp((char *)md5_hash, "0-byte-file") == 0) {
+                strncpy(md5_string, "0-byte-file", sizeof(md5_string));
+            } else {
+                for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
+                    snprintf(&md5_string[i * 2], 3, "%02x", (unsigned int)md5_hash[i]);
+                }
+            }
+        }
+
+        if (hash_audio) {
             unsigned char audio_md5_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
             unsigned char raw_hash[MD5_DIGEST_LENGTH] = {0};
             if (calculate_audio_md5(file_path, raw_hash) != 0) {
@@ -63,8 +65,6 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
             }
             snprintf(audio_md5_string, sizeof(audio_md5_string), "%s", audio_md5_hash);
         }
-    } else {
-        snprintf(audio_md5_string, sizeof(audio_md5_string), "Not calculated");
     }
 
     if (verbose) {
