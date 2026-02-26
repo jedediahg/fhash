@@ -16,6 +16,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
     struct stat st;
     if (stat(file_path, &st) == 0 && st.st_size == 0) {
         strncpy((char *)md5_hash, "0-byte-file", MD5_DIGEST_LENGTH * 2 + 1);
+        current_processing_file[0] = '\0';
         return 0;
     }
 
@@ -24,6 +25,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         av_strerror(ret, errbuf, sizeof(errbuf));
         fprintf(stderr, "FFmpeg: Error opening input file %s: %s\n", file_path, errbuf);
         memset(md5_hash, 0, MD5_DIGEST_LENGTH);
+        current_processing_file[0] = '\0';
         return -1;
     }
 
@@ -33,6 +35,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         fprintf(stderr, "FFmpeg: Error finding stream info for %s: %s\n", file_path, errbuf);
         avformat_close_input(&fmt_ctx);
         memset(md5_hash, 0, MD5_DIGEST_LENGTH);
+        current_processing_file[0] = '\0';
         return -1;
     }
 
@@ -40,6 +43,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
     if (audio_stream_idx < 0) {
         avformat_close_input(&fmt_ctx);
         memset(md5_hash, 0, MD5_DIGEST_LENGTH);
+        current_processing_file[0] = '\0';
         return -1;
     }
 
@@ -48,6 +52,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         fprintf(stderr, "OpenSSL: Error creating MD context for %s\n", file_path);
         avformat_close_input(&fmt_ctx);
         memset(md5_hash, 0, MD5_DIGEST_LENGTH);
+        current_processing_file[0] = '\0';
         return -1;
     }
 
@@ -56,6 +61,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
         memset(md5_hash, 0, MD5_DIGEST_LENGTH);
+        current_processing_file[0] = '\0';
         return -1;
     }
 
@@ -65,6 +71,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
         memset(md5_hash, 0, MD5_DIGEST_LENGTH);
+        current_processing_file[0] = '\0';
         return -1;
     }
 
@@ -76,6 +83,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
                 EVP_MD_CTX_free(mdctx);
                 avformat_close_input(&fmt_ctx);
                 memset(md5_hash, 0, MD5_DIGEST_LENGTH);
+                current_processing_file[0] = '\0';
                 return -1;
             }
         }
@@ -90,6 +98,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
         memset(md5_hash, 0, MD5_DIGEST_LENGTH);
+        current_processing_file[0] = '\0';
         return -1;
     }
 
@@ -99,6 +108,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
         memset(md5_hash, 0, MD5_DIGEST_LENGTH);
+        current_processing_file[0] = '\0';
         return -1;
     }
 

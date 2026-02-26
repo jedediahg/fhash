@@ -46,8 +46,14 @@ DirStack* create_dir_stack(int capacity) {
 
 void push_dir(DirStack *stack, const char *path) {
     if (stack->size >= stack->capacity) {
-        fprintf(stderr, "Stack overflow\n");
-        exit(1);
+        int new_capacity = stack->capacity * 2;
+        DirEntry *new_entries = realloc(stack->entries, new_capacity * sizeof(DirEntry));
+        if (!new_entries) {
+            fprintf(stderr, "Memory allocation error while growing directory stack\n");
+            exit(1);
+        }
+        stack->entries = new_entries;
+        stack->capacity = new_capacity;
     }
     strncpy(stack->entries[stack->size].path, path, MAX_PATH_LENGTH - 1);
     stack->entries[stack->size].path[MAX_PATH_LENGTH - 1] = '\0';
@@ -228,12 +234,25 @@ static void handle_group(sqlite3 *db, DupeEntry *group, int group_size, int link
             printf("[link] %s -> %s\n", entry->filepath, target->filepath);
             continue;
         }
-        if (unlink(entry->filepath) != 0) {
-            fprintf(stderr, "Error removing %s: %m\n", entry->filepath);
+
+        char tmp_path[MAX_PATH_LENGTH];
+        snprintf(tmp_path, sizeof(tmp_path), "%s.fhash_linkXXXXXX", entry->filepath);
+        int tmp_fd = mkstemp(tmp_path);
+        if (tmp_fd == -1) {
+            fprintf(stderr, "Error creating temp link path for %s: %m\n", entry->filepath);
             continue;
         }
-        if (link(target->filepath, entry->filepath) != 0) {
-            fprintf(stderr, "Error linking %s -> %s: %m\n", entry->filepath, target->filepath);
+        close(tmp_fd);
+        unlink(tmp_path); // free the path for link()
+
+        if (link(target->filepath, tmp_path) != 0) {
+            fprintf(stderr, "Error linking %s -> %s: %m\n", tmp_path, target->filepath);
+            unlink(tmp_path);
+            continue;
+        }
+        if (rename(tmp_path, entry->filepath) != 0) {
+            fprintf(stderr, "Error renaming temp link %s -> %s: %m\n", tmp_path, entry->filepath);
+            unlink(tmp_path);
             continue;
         }
         printf("[linked] %s -> %s\n", entry->filepath, target->filepath);
@@ -298,8 +317,9 @@ void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int
         "SELECT filepath, %s, md5, audio_md5, filename, extension, filesize, last_check_timestamp "
         "FROM files "
         "WHERE %s IS NOT 'N/A' AND %s IS NOT 'Not calculated' "
+        "AND %s IS NOT 'Bad audio' AND %s IS NOT '0-byte-file' "
         "ORDER BY %s, filepath;", 
-        column, column, column, column) == -1) {
+        column, column, column, column, column, column) == -1) {
         fprintf(stderr, "Memory: Error allocating SQL query\n");
         return;
     }

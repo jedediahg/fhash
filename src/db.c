@@ -59,18 +59,15 @@ int ensure_schema_and_version(sqlite3 *db) {
     }
     sqlite3_finalize(stmt);
 
-    if (has_db_version) {
-        if (strcmp(db_ver_buf, DB_VERSION) != 0) {
-            fprintf(stderr, "Database version mismatch: db has %s, fhash requires %s\n", db_ver_buf, DB_VERSION);
-            return 1;
-        }
+    if (has_db_version && strcmp(db_ver_buf, DB_VERSION) != 0) {
+        fprintf(stderr, "Database version mismatch: db has %s, fhash requires %s\n", db_ver_buf, DB_VERSION);
+        return 1;
     }
-    if (has_version) {
-        if (strcmp(app_ver_buf, FHASH_VERSION) != 0) {
-            fprintf(stderr, "fhash version mismatch recorded in DB: db has %s, binary is %s\n", app_ver_buf, FHASH_VERSION);
-            return 1;
-        }
-    } else {
+    if (has_version && strcmp(app_ver_buf, FHASH_VERSION) != 0) {
+        fprintf(stderr, "fhash version mismatch recorded in DB: db has %s, binary is %s\n", app_ver_buf, FHASH_VERSION);
+        return 1;
+    }
+    if (!has_db_version || !has_version) {
         char insert_sql[256];
         snprintf(insert_sql, sizeof(insert_sql), "INSERT OR REPLACE INTO sys (key, value) VALUES ('version', '%s'), ('db_version', '%s');", FHASH_VERSION, DB_VERSION);
         if (sqlite3_exec(db, insert_sql, NULL, NULL, NULL) != SQLITE_OK) {
