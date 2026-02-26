@@ -21,7 +21,9 @@ char* pop_dir(DirStack *stack);
 void destroy_dir_stack(DirStack *stack);
 
 void init_logging_callback(int verbose);
-void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int dry_run);
+void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int dry_run, const char *path_filter, int recurse_filter, char **ext_list, int ext_count);
+int path_matches_filter(const char *filepath, const char *base, int recurse_dirs);
+int ext_matches_filter(const char *extension, char **ext_list, int ext_count);
 
 #define DUPE_AUDIO 1
 #define DUPE_FILE 2

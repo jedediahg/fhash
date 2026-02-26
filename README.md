@@ -53,45 +53,40 @@ sudo make uninstall
 ## Usage
 
 ```bash
-./fhash [-help] [-v] [-f] [-h] [-a] [-r] [-d <dbpath>] -s <startpath> -e <extensionlist>
-./fhash [-help] [-v] [-d <dbpath>] -xa<n> | -xh<n> [-l{mode}] [-dry]
+./fhash scan [options]
+./fhash dupe (-xa<n> | -xh<n>) [options]
+./fhash link (-xa<n> | -xh<n>) -l{mode} [options]
 ```
 
 ### Options:
 
 - `-help`: Show help text.
 - `-v`: Verbose output (default: OFF).
-- `-f`: Force re-indexing of files (updates existing records).
-- `-h`: Calculate standard MD5 hash of the entire file.
-- `-a`: Calculate MD5 hash of the **audio stream only**.
-- `-r`: Recurse into subdirectories.
-- `-d <dbpath>`: Path to the SQLite database (default: `./file_hashes.db`).
-- `-s <startpath>`: The directory to start scanning from.
-- `-e <extensionlist>`: Comma-separated list of extensions to index (e.g., `mp3,flac,wav`).
-- `-xa<n>`: List files with duplicate `audio_md5` values already in the database (minimum group size `n`, default 2).
-- `-xh<n>`: List files with duplicate file `md5` values already in the database (minimum group size `n`, default 2).
-- `-l{mode}`: With `-xa`/`-xh`, replace duplicates by linking them to one target per hash group. Modes: `s`=shallowest path, `d`=deepest path, `m`=most metadata, `o`=oldest mtime, `n`=newest mtime.
-- `-dry`: Dry run; show planned actions without modifying files.
+- `scan` options: `-s <startpath>` (default `.`), `-e <extlist>`, `-r`, `-h`, `-a`, `-f`.
+- `dupe` options: `-xa<n>` (audio hash) or `-xh<n>` (file hash), optional min group size `n` (default 2).
+- `link` options: same as `dupe` plus `-l{mode}` to hard-link duplicates (`s`=shallowest path, `d`=deepest path, `m`=most metadata, `o`=oldest, `n`=newest).
+- Shared options (all commands): `-e <extlist>` filter, `-s <startpath>` (with `-r` to include subdirectories) constrain duplicate queries, `-d <dbpath>` (default `./file_hashes.db`), `-v` verbose, `-dry` dry run.
 
-**Duplicate listing notes**
-- `-xa` and `-xh` are mutually exclusive and cannot be combined with `-h`, `-a`, `-f`, or `-s`. Duplicate commands only read the existing database and output paths sorted by hash, with a blank line separating each hash group.
-- When `-l{mode}` is supplied, one file per group is kept and the rest are hard-linked to it (unless `-dry` is used).
+**Duplicate/Link notes**
+- `dupe` and `link` commands use existing DB contents; they respect `-s`/`-r`/`-e` as filters on the query. Without `-r`, filtering by `-s` is limited to that directory only.
+- `-xa` and `-xh` are mutually exclusive. `-l` is only valid with the `link` command.
+- `-dry` is global; in `link` mode it prints planned links without changing files or DB rows.
   
 **Examples:**
 
-List file-hash duplicates with at least 3 copies:
+Scan and hash a music folder:
 ```bash
-./fhash -xh3
+./fhash scan -s ~/Music -e mp3,flac -h -a -r
 ```
 
-List audio-hash duplicates (groups of 2 or more, default):
+List file-hash duplicates (min group 3) under a path:
 ```bash
-./fhash -xa
+./fhash dupe -xh3 -s ~/Music -r
 ```
 
-Dry-run a dedupe using the shallowest path as the keeper:
+Dry-run a link pass using the shallowest path as the keeper, limited to `txt` files:
 ```bash
-./fhash -xh2 -ls -dry
+./fhash link -xh2 -ls -s ./docs -r -e txt -dry
 ```
 
 ## Database Overview
