@@ -64,4 +64,10 @@ run_step "link dry-run (file hash, shallowest)" "${ROOT}/fhash" link -v -xh2 -ls
 # 5) Sentinel coverage check for 0-byte and bad-audio entries
 run_step "sentinel rows check" sqlite3 "${DB}" "SELECT filename, md5, audio_md5 FROM files WHERE md5='0-byte-file' OR audio_md5='Bad audio' ORDER BY filename;"
 
+# 6) Incremental update without -f (mtime/filesize change should trigger rehash)
+run_step "incremental baseline md5" bash -lc "sqlite3 '${DB}' \"SELECT md5 FROM files WHERE filepath='${WORK}/Hard Link Hearts.mp3';\" > '${WORK}/md5_before.txt' && test -s '${WORK}/md5_before.txt'"
+run_step "mutate tracked file" bash -lc "printf 'x' >> '${WORK}/Hard Link Hearts.mp3'"
+run_step "incremental rescan without -f" "${ROOT}/fhash" scan -v -r -h -s "${WORK}" -e mp3 -d "${DB}"
+run_step "incremental md5 changed check" bash -lc "sqlite3 '${DB}' \"SELECT md5 FROM files WHERE filepath='${WORK}/Hard Link Hearts.mp3';\" > '${WORK}/md5_after.txt' && test -s '${WORK}/md5_after.txt' && ! cmp -s '${WORK}/md5_before.txt' '${WORK}/md5_after.txt'"
+
 echo "[INFO] Results written to ${OUT}"

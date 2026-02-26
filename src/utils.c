@@ -1,4 +1,5 @@
 #include "utils.h"
+#include "db.h"
 #include <libavutil/log.h>
 
 static int verbose_global = 0;
@@ -54,6 +55,10 @@ void push_dir(DirStack *stack, const char *path) {
         }
         stack->entries = new_entries;
         stack->capacity = new_capacity;
+    }
+    if (strlen(path) >= MAX_PATH_LENGTH) {
+        fprintf(stderr, "OS: Path too long, skipping directory: %s\n", path);
+        return;
     }
     strncpy(stack->entries[stack->size].path, path, MAX_PATH_LENGTH - 1);
     stack->entries[stack->size].path[MAX_PATH_LENGTH - 1] = '\0';
@@ -298,9 +303,13 @@ void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int
     sqlite3_stmt *size_stmt = NULL;
 
     if (!dry_run && link_mode != LINK_NONE) {
+        if (begin_transaction(db) != 0) {
+            return;
+        }
         const char *ts_sql = "UPDATE files SET last_check_timestamp = ?, filetype = ? WHERE filepath = ?;";
         if (sqlite3_prepare_v2(db, ts_sql, -1, &ts_stmt, NULL) != SQLITE_OK) {
             fprintf(stderr, "SQL: Error preparing timestamp update: %s\n", sqlite3_errmsg(db));
+            rollback_transaction(db);
             return;
         }
         if (type == DUPE_AUDIO) {
@@ -308,6 +317,7 @@ void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int
             if (sqlite3_prepare_v2(db, size_sql, -1, &size_stmt, NULL) != SQLITE_OK) {
                 fprintf(stderr, "SQL: Error preparing size/hash update: %s\n", sqlite3_errmsg(db));
                 sqlite3_finalize(ts_stmt);
+                rollback_transaction(db);
                 return;
             }
         }
@@ -316,11 +326,11 @@ void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int
     if (asprintf(&sql, 
         "SELECT filepath, %s, md5, audio_md5, filename, extension, filesize, last_check_timestamp "
         "FROM files "
-        "WHERE %s IS NOT 'N/A' AND %s IS NOT 'Not calculated' "
-        "AND %s IS NOT 'Bad audio' AND %s IS NOT '0-byte-file' "
+        "WHERE %s NOT IN ('N/A', 'Not calculated', 'Bad audio', '0-byte-file') "
         "ORDER BY %s, filepath;", 
-        column, column, column, column, column, column) == -1) {
+        column, column, column) == -1) {
         fprintf(stderr, "Memory: Error allocating SQL query\n");
+        if (!dry_run && link_mode != LINK_NONE) rollback_transaction(db);
         return;
     }
 
@@ -328,6 +338,7 @@ void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
         fprintf(stderr, "SQL: Error preparing duplicate query: %s\n", sqlite3_errmsg(db));
         free(sql);
+        if (!dry_run && link_mode != LINK_NONE) rollback_transaction(db);
         return;
     }
 
@@ -384,11 +395,13 @@ void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int
             if (fname) strncpy(entry->filename, (const char *)fname, sizeof(entry->filename) - 1);
             if (ext) strncpy(entry->extension, (const char *)ext, sizeof(entry->extension) - 1);
 
-            if (stat(entry->filepath, &entry->st) == 0) {
-                entry->has_stat = 1;
-            } else {
-                fprintf(stderr, "OS: Error stating %s: %m\n", entry->filepath);
-                entry->has_stat = 0;
+            if (link_mode != LINK_NONE) {
+                if (stat(entry->filepath, &entry->st) == 0) {
+                    entry->has_stat = 1;
+                } else {
+                    fprintf(stderr, "OS: Error stating %s: %m\n", entry->filepath);
+                    entry->has_stat = 0;
+                }
             }
         }
 
@@ -407,4 +420,9 @@ void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int
 
     if (ts_stmt) sqlite3_finalize(ts_stmt);
     if (size_stmt) sqlite3_finalize(size_stmt);
+    if (!dry_run && link_mode != LINK_NONE) {
+        if (commit_transaction(db) != 0) {
+            rollback_transaction(db);
+        }
+    }
 }

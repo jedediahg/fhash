@@ -15,7 +15,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
 
     struct stat st;
     if (stat(file_path, &st) == 0 && st.st_size == 0) {
-        strncpy((char *)md5_hash, "0-byte-file", MD5_DIGEST_LENGTH * 2 + 1);
+        memset(md5_hash, 0, MD5_DIGEST_LENGTH);
         current_processing_file[0] = '\0';
         return 0;
     }
@@ -136,38 +136,49 @@ int calculate_md5(const char *file_path, unsigned char *md5_hash) {
 
     off_t file_size = st.st_size;
     if (file_size == 0) {
-        strncpy((char *)md5_hash, "0-byte-file", MD5_DIGEST_LENGTH * 2 + 1);
+        memset(md5_hash, 0, MD5_DIGEST_LENGTH);
         close(fd);
         return 0;
-    }
-
-    char *file_data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (file_data == MAP_FAILED) {
-        fprintf(stderr, "OS: Error mapping file %s to memory: %m\n", file_path);
-        close(fd);
-        return -1;
     }
 
     EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
     if (!mdctx) {
         fprintf(stderr, "OpenSSL: Error creating MD context for %s\n", file_path);
-        munmap(file_data, file_size);
         close(fd);
         return -1;
     }
 
-    if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1 ||
-        EVP_DigestUpdate(mdctx, file_data, file_size) != 1 ||
-        EVP_DigestFinal_ex(mdctx, md5_hash, NULL) != 1) {
-        fprintf(stderr, "OpenSSL: Error calculating MD5 hash for %s\n", file_path);
+    if (EVP_DigestInit_ex(mdctx, EVP_md5(), NULL) != 1) {
+        fprintf(stderr, "OpenSSL: Error initializing MD5 hash for %s\n", file_path);
         EVP_MD_CTX_free(mdctx);
-        munmap(file_data, file_size);
+        close(fd);
+        return -1;
+    }
+
+    unsigned char buffer[1024 * 1024];
+    ssize_t bytes_read = 0;
+    while ((bytes_read = read(fd, buffer, sizeof(buffer))) > 0) {
+        if (EVP_DigestUpdate(mdctx, buffer, (size_t)bytes_read) != 1) {
+            fprintf(stderr, "OpenSSL: Error updating MD5 hash for %s\n", file_path);
+            EVP_MD_CTX_free(mdctx);
+            close(fd);
+            return -1;
+        }
+    }
+    if (bytes_read < 0) {
+        fprintf(stderr, "OS: Error reading file %s: %m\n", file_path);
+        EVP_MD_CTX_free(mdctx);
+        close(fd);
+        return -1;
+    }
+    if (EVP_DigestFinal_ex(mdctx, md5_hash, NULL) != 1) {
+        fprintf(stderr, "OpenSSL: Error finalizing MD5 hash for %s\n", file_path);
+        EVP_MD_CTX_free(mdctx);
         close(fd);
         return -1;
     }
 
     EVP_MD_CTX_free(mdctx);
-    munmap(file_data, file_size);
     close(fd);
     return 0;
 }

@@ -11,7 +11,7 @@ A key feature of `fhash` is its ability to calculate the MD5 hash of **audio str
 - **File Hashing**: Calculates standard MD5 hashes for the entire file.
 - **Audio Hashing**: Uses FFmpeg to extract and hash only the audio data, bypassing metadata.
 - **Batch Processing**: Uses SQLite transactions for high-speed indexing.
-- **Incremental Updates**: Only updates changed files unless forced.
+- **Incremental Updates**: Uses file size + mtime to skip unchanged rows and updates changed files unless forced.
 
 ## Prerequisites
 
@@ -102,6 +102,7 @@ Dry-run a link pass using the shallowest path as the keeper, limited to `txt` fi
   - `extension` (TEXT): Extension without dot.
   - `filesize` (INTEGER): Size in bytes.
   - `last_check_timestamp` (TIMESTAMP): Last time `fhash` scanned/linked this entry.
+  - `modified_timestamp` (INTEGER): File modification time (`st_mtime`) seen during last scan.
   - `filetype` (TEXT, 1 char): `F` = regular file, `L` = hard link, `D` = directory.
 - `sys`: Key/value metadata for the database.
   - `version`: Application version recorded in the DB.

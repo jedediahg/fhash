@@ -25,6 +25,28 @@ static int ensure_filetype_column(sqlite3 *db) {
     return 0;
 }
 
+static int ensure_modified_column(sqlite3 *db) {
+    int has_column = 0;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(files);", -1, &stmt, NULL) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char *col_name = sqlite3_column_text(stmt, 1);
+            if (col_name && strcmp((const char *)col_name, "modified_timestamp") == 0) {
+                has_column = 1;
+                break;
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
+    if (!has_column) {
+        if (sqlite3_exec(db, "ALTER TABLE files ADD COLUMN modified_timestamp INTEGER DEFAULT 0;", NULL, NULL, NULL) != SQLITE_OK) {
+            fprintf(stderr, "SQL error adding modified_timestamp column: %s\n", sqlite3_errmsg(db));
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int ensure_schema_and_version(sqlite3 *db) {
     if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS sys (key TEXT PRIMARY KEY, value TEXT);", NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "SQL error ensuring sys table: %s\n", sqlite3_errmsg(db));
@@ -76,13 +98,42 @@ int ensure_schema_and_version(sqlite3 *db) {
         }
     }
 
-    const char *create_files_sql = "CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, md5 TEXT, audio_md5 TEXT, filepath TEXT, filename TEXT, extension TEXT, filesize INTEGER, last_check_timestamp TIMESTAMP, filetype TEXT DEFAULT 'F', UNIQUE(filepath));";
+    const char *create_files_sql =
+        "CREATE TABLE IF NOT EXISTS files ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "md5 TEXT, "
+        "audio_md5 TEXT, "
+        "filepath TEXT, "
+        "filename TEXT, "
+        "extension TEXT, "
+        "filesize INTEGER, "
+        "last_check_timestamp TIMESTAMP, "
+        "modified_timestamp INTEGER DEFAULT 0, "
+        "filetype TEXT DEFAULT 'F', "
+        "UNIQUE(filepath)"
+        ");";
     if (sqlite3_exec(db, create_files_sql, NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "SQL error ensuring files table: %s\n", sqlite3_errmsg(db));
         return 1;
     }
 
     if (ensure_filetype_column(db) != 0) {
+        return 1;
+    }
+    if (ensure_modified_column(db) != 0) {
+        return 1;
+    }
+
+    if (sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_files_md5 ON files(md5);", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error creating idx_files_md5: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+    if (sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_files_audio_md5 ON files(audio_md5);", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error creating idx_files_audio_md5: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+    if (sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension);", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error creating idx_files_extension: %s\n", sqlite3_errmsg(db));
         return 1;
     }
 
@@ -103,4 +154,12 @@ int commit_transaction(sqlite3 *db) {
         return 1; 
     }
     return 0; 
+}
+
+int rollback_transaction(sqlite3 *db) {
+    if (sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Failed to rollback transaction: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+    return 0;
 }
