@@ -29,17 +29,17 @@ run_cmd() {
 }
 
 echo "[INFO] Running scans and duplicate checks..."
-run_cmd "scan (file+audio)" ./fhash scan -v -r -h -a -f -s "${WORK}" -e mp3 -d "${DB}"
+run_cmd "scan (file+audio)" ${ROOT}/fhash scan -v -r -h -a -f -s "${WORK}" -e mp3 -d "${DB}"
 run_cmd "post-scan db" sqlite3 "${DB}" "SELECT filepath, md5, audio_md5 FROM files ORDER BY filepath;"
 run_cmd "post-scan ll" ls -lR "${WORK}"
 
-run_cmd "dupe file hash" ./fhash dupe -v -xh2 -s "${WORK}" -r -e mp3 -d "${DB}"
+run_cmd "dupe file hash" ${ROOT}/fhash dupe -v -xh2 -s "${WORK}" -r -e mp3 -d "${DB}"
 run_cmd "post-dupe db" sqlite3 "${DB}" "SELECT filepath, md5, audio_md5 FROM files ORDER BY md5, filepath;"
 
-run_cmd "dupe audio hash" ./fhash dupe -v -xa2 -s "${WORK}" -r -e mp3 -d "${DB}"
+run_cmd "dupe audio hash" ${ROOT}/fhash dupe -v -xa2 -s "${WORK}" -r -e mp3 -d "${DB}"
 run_cmd "post-dupe-audio db" sqlite3 "${DB}" "SELECT filepath, md5, audio_md5 FROM files ORDER BY audio_md5, filepath;"
 
-run_cmd "link dry-run (file hash, shallowest)" ./fhash link -v -xh2 -ls -s "${WORK}/dupes" -r -e mp3 -d "${DB}" -dry
+run_cmd "link dry-run (file hash, shallowest)" ${ROOT}/fhash link -v -xh2 -ls -s "${WORK}/dupes" -r -e mp3 -d "${DB}" -dry
 run_cmd "post-link dry-run ll" ls -lR "${WORK}"
 
 echo "[INFO] Results written to ${OUT}"
