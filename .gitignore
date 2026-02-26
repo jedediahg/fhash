@@ -3,3 +3,5 @@ fhash\n*.db\n*_dbg
 fhash
 *.db
 *.journal
+tests/workdir
+test_results.txt
