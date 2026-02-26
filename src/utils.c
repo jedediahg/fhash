@@ -175,7 +175,7 @@ static void print_group(DupeEntry *entries, int count) {
     }
 }
 
-static void handle_group(DupeEntry *group, int group_size, int link_mode, int dry_run) {
+static void handle_group(sqlite3 *db, DupeEntry *group, int group_size, int link_mode, int dry_run, int type, sqlite3_stmt *ts_stmt, sqlite3_stmt *size_stmt) {
     if (group_size == 0) return;
     if (link_mode == LINK_NONE) {
         print_group(group, group_size);
@@ -210,6 +210,33 @@ static void handle_group(DupeEntry *group, int group_size, int link_mode, int dr
             continue;
         }
         printf("[linked] %s -> %s\n", entry->filepath, target->filepath);
+
+        if (ts_stmt) {
+            time_t now = time(NULL);
+            sqlite3_bind_int64(ts_stmt, 1, now);
+            sqlite3_bind_text(ts_stmt, 2, entry->filepath, -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(ts_stmt) != SQLITE_DONE) {
+                fprintf(stderr, "SQL: Error updating timestamp for %s: %s\n", entry->filepath, sqlite3_errmsg(db));
+            }
+            sqlite3_reset(ts_stmt);
+            sqlite3_clear_bindings(ts_stmt);
+        }
+
+        if (type == DUPE_AUDIO && size_stmt) {
+            int64_t target_size = target->has_stat ? (int64_t)target->st.st_size : target->filesize;
+            int64_t entry_size = entry->has_stat ? (int64_t)entry->st.st_size : entry->filesize;
+            if (target_size != entry_size) {
+                sqlite3_bind_int64(size_stmt, 1, target_size);
+                sqlite3_bind_text(size_stmt, 2, target->md5, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(size_stmt, 3, time(NULL));
+                sqlite3_bind_text(size_stmt, 4, entry->filepath, -1, SQLITE_TRANSIENT);
+                if (sqlite3_step(size_stmt) != SQLITE_DONE) {
+                    fprintf(stderr, "SQL: Error updating size/hash for %s: %s\n", entry->filepath, sqlite3_errmsg(db));
+                }
+                sqlite3_reset(size_stmt);
+                sqlite3_clear_bindings(size_stmt);
+            }
+        }
     }
     printf("\n");
 }
@@ -217,6 +244,24 @@ static void handle_group(DupeEntry *group, int group_size, int link_mode, int dr
 void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int dry_run) {
     const char *column = (type == DUPE_AUDIO) ? "audio_md5" : "md5";
     char *sql = NULL;
+    sqlite3_stmt *ts_stmt = NULL;
+    sqlite3_stmt *size_stmt = NULL;
+
+    if (!dry_run && link_mode != LINK_NONE) {
+        const char *ts_sql = "UPDATE files SET last_check_timestamp = ? WHERE filepath = ?;";
+        if (sqlite3_prepare_v2(db, ts_sql, -1, &ts_stmt, NULL) != SQLITE_OK) {
+            fprintf(stderr, "SQL: Error preparing timestamp update: %s\n", sqlite3_errmsg(db));
+            return;
+        }
+        if (type == DUPE_AUDIO) {
+            const char *size_sql = "UPDATE files SET filesize = ?, md5 = ?, last_check_timestamp = ? WHERE filepath = ?;";
+            if (sqlite3_prepare_v2(db, size_sql, -1, &size_stmt, NULL) != SQLITE_OK) {
+                fprintf(stderr, "SQL: Error preparing size/hash update: %s\n", sqlite3_errmsg(db));
+                sqlite3_finalize(ts_stmt);
+                return;
+            }
+        }
+    }
 
     if (asprintf(&sql, 
         "SELECT t1.filepath, t1.%s, t1.md5, t1.audio_md5, t1.filename, t1.extension, t1.filesize, t1.last_check_timestamp "
@@ -252,7 +297,7 @@ void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int
         if (!hash || !filepath) continue;
 
         if (prev_hash[0] != '\0' && strcmp(hash, prev_hash) != 0) {
-            handle_group(group, group_size, link_mode, dry_run);
+            handle_group(db, group, group_size, link_mode, dry_run, type, ts_stmt, size_stmt);
             free_dupe_entries(group, group_size);
             group = NULL;
             group_size = 0;
@@ -298,10 +343,13 @@ void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int
     }
 
     if (group_size > 0) {
-        handle_group(group, group_size, link_mode, dry_run);
+        handle_group(db, group, group_size, link_mode, dry_run, type, ts_stmt, size_stmt);
         free_dupe_entries(group, group_size);
     }
 
     sqlite3_finalize(stmt);
     free(sql);
+
+    if (ts_stmt) sqlite3_finalize(ts_stmt);
+    if (size_stmt) sqlite3_finalize(size_stmt);
 }
