@@ -34,22 +34,6 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
         snprintf(md5_string, sizeof(md5_string), "Not calculated");
     }
 
-    char audio_md5_string[MD5_DIGEST_LENGTH * 2 + 1] = {0};
-        if (hash_audio) {
-            unsigned char audio_md5_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
-            unsigned char raw_hash[MD5_DIGEST_LENGTH] = {0};
-            if (calculate_audio_md5(file_path, raw_hash) != 0) {
-                snprintf((char *)audio_md5_hash, sizeof(audio_md5_hash), "Bad audio");
-            } else {
-                for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
-                    snprintf((char *)&audio_md5_hash[i * 2], 3, "%02x", (unsigned int)raw_hash[i]);
-                }
-            }
-            snprintf(audio_md5_string, sizeof(audio_md5_string), "%s", audio_md5_hash);
-        } else {
-            snprintf(audio_md5_string, sizeof(audio_md5_string), "Not calculated");
-        }
-
     const char *filename = strrchr(file_path, '/');
     filename = (filename != NULL) ? (filename + 1) : file_path;
     char *extension = strrchr(filename, '.');
@@ -62,6 +46,26 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
 
     int64_t filesize = (int64_t)st.st_size;
     time_t current_time = time(NULL);
+
+    char audio_md5_string[MD5_DIGEST_LENGTH * 2 + 1] = {0};
+    if (hash_audio) {
+        if (filesize == 0 && strcmp(md5_string, "0-byte-file") == 0) {
+            snprintf(audio_md5_string, sizeof(audio_md5_string), "0-byte-file");
+        } else {
+            unsigned char audio_md5_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
+            unsigned char raw_hash[MD5_DIGEST_LENGTH] = {0};
+            if (calculate_audio_md5(file_path, raw_hash) != 0) {
+                snprintf((char *)audio_md5_hash, sizeof(audio_md5_hash), "Bad audio");
+            } else {
+                for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
+                    snprintf((char *)&audio_md5_hash[i * 2], 3, "%02x", (unsigned int)raw_hash[i]);
+                }
+            }
+            snprintf(audio_md5_string, sizeof(audio_md5_string), "%s", audio_md5_hash);
+        }
+    } else {
+        snprintf(audio_md5_string, sizeof(audio_md5_string), "Not calculated");
+    }
 
     if (verbose) {
         printf("\tMD5: %s\n", md5_string);
