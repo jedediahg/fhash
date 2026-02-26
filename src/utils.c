@@ -17,7 +17,7 @@ void help() {
     printf("  -xa<n>\t\taudio hash duplicates (min group size n, default 2)\n");
     printf("  -xh<n>\t\tfile hash duplicates (min group size n, default 2)\n");
     printf("  -l{mode}\tlink duplicates (s=shallow, d=deep, m=metadata, o=oldest, n=newest)\n");
-    printf("  -s/-r/-e\tlimit duplicate queries to path/recursion/extensions\n");
+    printf("  -s/-r/-e\tlimit duplicate queries to path/recursion/extensions (applies to dupe and link)\n");
     printf("\n");
     printf("Global options:\n");
     printf("  -d <dbpath>\tSQLite database path (default ./file_hashes.db)\n");
