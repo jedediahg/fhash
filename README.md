@@ -95,8 +95,8 @@ Dry-run a link pass using the shallowest path as the keeper, limited to `txt` fi
 
 - `files`: Indexed items and their metadata.
   - `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
-  - `md5` (TEXT): Full-file MD5 hash (or `Not calculated`).
-  - `audio_md5` (TEXT): Audio-only MD5 hash (or `Not calculated` / `N/A`).
+  - `md5` (TEXT): Full-file MD5 hash (`Not calculated` if skipped, `0-byte-file` if size was zero).
+  - `audio_md5` (TEXT): Audio-only MD5 hash (`Not calculated` if skipped, `0-byte-file` if size was zero, `Bad audio` on FFmpeg/audio errors).
   - `filepath` (TEXT UNIQUE): Absolute path.
   - `filename` (TEXT): Basename of the file.
   - `extension` (TEXT): Extension without dot.
