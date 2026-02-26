@@ -242,6 +242,8 @@ int main(int argc, char *argv[]) {
     int recurse_dirs = 0;
     int dupe_mode = 0;
     int min_dupes = 2;
+    int link_mode = LINK_NONE;
+    int dry_run = 0;
     char *database_path = "./file_hashes.db";
     char *start_path = NULL;
     char *extensions_concatenated = "";
@@ -261,11 +263,10 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[arg_index], "-r") == 0) {
             recurse_dirs = 1;
         } else if (strncmp(argv[arg_index], "-xa", 3) == 0 ||
-                   strncmp(argv[arg_index], "-xh", 3) == 0 ||
-                   strncmp(argv[arg_index], "-xf", 3) == 0) {
+                   strncmp(argv[arg_index], "-xh", 3) == 0) {
             int requested_mode = (argv[arg_index][2] == 'a') ? DUPE_AUDIO : DUPE_FILE;
             if (dupe_mode != 0 && dupe_mode != requested_mode) {
-                fprintf(stderr, "Error: Duplicate listing flags are mutually exclusive (-xa vs -xh/-xf)\n");
+                fprintf(stderr, "Error: Duplicate listing flags are mutually exclusive (-xa vs -xh)\n");
                 return 1;
             }
             dupe_mode = requested_mode;
@@ -273,6 +274,23 @@ int main(int argc, char *argv[]) {
                 int candidate = atoi(argv[arg_index] + 3);
                 min_dupes = (candidate > 1) ? candidate : min_dupes;
             }
+        } else if (strncmp(argv[arg_index], "-l", 2) == 0) {
+            if (strlen(argv[arg_index]) < 3) {
+                fprintf(stderr, "Error: -l requires a mode (s,d,m,o,n)\n");
+                return 1;
+            }
+            switch (argv[arg_index][2]) {
+                case 's': link_mode = LINK_SHALLOW; break;
+                case 'd': link_mode = LINK_DEEP; break;
+                case 'm': link_mode = LINK_METADATA; break;
+                case 'o': link_mode = LINK_OLDEST; break;
+                case 'n': link_mode = LINK_NEWEST; break;
+                default:
+                    fprintf(stderr, "Error: Unknown -l mode '%c' (use s,d,m,o,n)\n", argv[arg_index][2]);
+                    return 1;
+            }
+        } else if (strcmp(argv[arg_index], "-dry") == 0) {
+            dry_run = 1;
         } else if (strcmp(argv[arg_index], "-d") == 0) {
             if (arg_index + 1 < argc) {
                 database_path = argv[++arg_index];
@@ -307,7 +325,11 @@ int main(int argc, char *argv[]) {
 
     // Check for mutual exclusivity
     if (dupe_mode != 0 && (hash_files || hash_audio || force_rescan || start_path != NULL)) {
-        fprintf(stderr, "Error: Duplicate listing flags (-xa, -xh/-xf) cannot be used with scanning flags (-h, -a, -f, -s)\n");
+        fprintf(stderr, "Error: Duplicate listing flags (-xa, -xh) cannot be used with scanning flags (-h, -a, -f, -s)\n");
+        return 1;
+    }
+    if (link_mode != LINK_NONE && dupe_mode == 0) {
+        fprintf(stderr, "Error: -l requires a duplicate listing mode (-xa or -xh)\n");
         return 1;
     }
 
@@ -320,7 +342,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (dupe_mode != 0) {
-        print_duplicates(db, dupe_mode, min_dupes);
+        process_duplicates(db, dupe_mode, min_dupes, link_mode, dry_run);
         sqlite3_close(db);
         return 0;
     }

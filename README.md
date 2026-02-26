@@ -54,7 +54,7 @@ sudo make uninstall
 
 ```bash
 ./fhash [-help] [-v] [-f] [-h] [-a] [-r] [-d <dbpath>] -s <startpath> -e <extensionlist>
-./fhash [-help] [-v] [-d <dbpath>] -xa<n> | -xh<n>
+./fhash [-help] [-v] [-d <dbpath>] -xa<n> | -xh<n> [-l{mode}] [-dry]
 ```
 
 ### Options:
@@ -69,10 +69,13 @@ sudo make uninstall
 - `-s <startpath>`: The directory to start scanning from.
 - `-e <extensionlist>`: Comma-separated list of extensions to index (e.g., `mp3,flac,wav`).
 - `-xa<n>`: List files with duplicate `audio_md5` values already in the database (minimum group size `n`, default 2).
-- `-xh<n>`: List files with duplicate file `md5` values already in the database (alias: `-xf<n>`, minimum group size `n`, default 2).
+- `-xh<n>`: List files with duplicate file `md5` values already in the database (minimum group size `n`, default 2).
+- `-l{mode}`: With `-xa`/`-xh`, replace duplicates by linking them to one target per hash group. Modes: `s`=shallowest path, `d`=deepest path, `m`=most metadata, `o`=oldest mtime, `n`=newest mtime.
+- `-dry`: Dry run; show planned actions without modifying files.
 
 **Duplicate listing notes**
-- `-xa` and `-xh/-xf` are mutually exclusive and cannot be combined with `-h`, `-a`, `-f`, or `-s`. These commands only read the existing database and output paths sorted by hash, with a blank line separating each hash group.
+- `-xa` and `-xh` are mutually exclusive and cannot be combined with `-h`, `-a`, `-f`, or `-s`. Duplicate commands only read the existing database and output paths sorted by hash, with a blank line separating each hash group.
+- When `-l{mode}` is supplied, one file per group is kept and the rest are hard-linked to it (unless `-dry` is used).
   
 **Examples:**
 
@@ -84,6 +87,11 @@ List file-hash duplicates with at least 3 copies:
 List audio-hash duplicates (groups of 2 or more, default):
 ```bash
 ./fhash -xa
+```
+
+Dry-run a dedupe using the shallowest path as the keeper:
+```bash
+./fhash -xh2 -ls -dry
 ```
 
 ### Examples:

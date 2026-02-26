@@ -14,8 +14,10 @@ void help() {
     printf("-s\tstart in <startpath>, this must be a directory\n");
     printf("-e\tindex files with <extensionlist> extensions, default none, use csv format, e.g. jpeg,jpg,flac,mp3,doc\n");
     printf("-xa<n>\tlist files with duplicate audio hash (n = min copies, default 2)\n");
-    printf("-xh<n>\tlist files with duplicate file hash (alias: -xf<n>) (n = min copies, default 2)\n");
-    printf("Note: -xa/-xh are mutually exclusive and cannot be combined with -f, -a, or -h\n");
+    printf("-xh<n>\tlist files with duplicate file hash (n = min copies, default 2)\n");
+    printf("-l{mode}\treplace duplicates with hard links (requires -xa or -xh). Modes: s=shallowest, d=deepest, m=most metadata, o=oldest, n=newest\n");
+    printf("-dry\tdry run; show actions without modifying files\n");
+    printf("Note: -xa/-xh are mutually exclusive and cannot be combined with -f, -a, or -h. -l requires one of -xa/-xh.\n");
     printf("\n");
 }
 
@@ -88,13 +90,136 @@ void init_logging_callback(int verbose) {
     }
 }
 
-void print_duplicates(sqlite3 *db, int type, int min_count) {
+typedef struct {
+    char *filepath;
+    char hash[MD5_DIGEST_LENGTH * 2 + 1];
+    char md5[MD5_DIGEST_LENGTH * 2 + 1];
+    char audio_md5[MD5_DIGEST_LENGTH * 2 + 1];
+    char filename[MAX_PATH_LENGTH];
+    char extension[64];
+    int64_t filesize;
+    time_t last_check;
+    struct stat st;
+    int has_stat;
+    int depth;
+} DupeEntry;
+
+static int path_depth(const char *path) {
+    int depth = 0;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/') depth++;
+    }
+    return depth;
+}
+
+static int has_value(const char *s) {
+    return s && s[0] != '\0' && strcmp(s, "Not calculated") != 0 && strcmp(s, "N/A") != 0;
+}
+
+static int metadata_score(const DupeEntry *e) {
+    int score = 0;
+    if (has_value(e->md5)) score++;
+    if (has_value(e->audio_md5)) score++;
+    if (has_value(e->filename)) score++;
+    if (has_value(e->extension)) score++;
+    if (e->filesize > 0) score++;
+    if (e->last_check > 0) score++;
+    return score;
+}
+
+static void free_dupe_entries(DupeEntry *entries, int count) {
+    for (int i = 0; i < count; i++) {
+        free(entries[i].filepath);
+    }
+    free(entries);
+}
+
+static const DupeEntry* choose_target(DupeEntry *entries, int count, int link_mode) {
+    const DupeEntry *target = &entries[0];
+    for (int i = 1; i < count; i++) {
+        const DupeEntry *candidate = &entries[i];
+        switch (link_mode) {
+            case LINK_SHALLOW:
+                if (candidate->depth < target->depth) target = candidate;
+                break;
+            case LINK_DEEP:
+                if (candidate->depth > target->depth) target = candidate;
+                break;
+            case LINK_METADATA:
+                if (metadata_score(candidate) > metadata_score(target)) target = candidate;
+                break;
+            case LINK_OLDEST:
+                if (candidate->has_stat && !target->has_stat) {
+                    target = candidate;
+                } else if (candidate->has_stat && target->has_stat && candidate->st.st_mtime < target->st.st_mtime) {
+                    target = candidate;
+                }
+                break;
+            case LINK_NEWEST:
+                if (candidate->has_stat && !target->has_stat) {
+                    target = candidate;
+                } else if (candidate->has_stat && target->has_stat && candidate->st.st_mtime > target->st.st_mtime) {
+                    target = candidate;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    return target;
+}
+
+static void print_group(DupeEntry *entries, int count) {
+    for (int i = 0; i < count; i++) {
+        printf("%s\n", entries[i].filepath);
+    }
+}
+
+static void handle_group(DupeEntry *group, int group_size, int link_mode, int dry_run) {
+    if (group_size == 0) return;
+    if (link_mode == LINK_NONE) {
+        print_group(group, group_size);
+        printf("\n");
+        return;
+    }
+    const DupeEntry *target = choose_target(group, group_size, link_mode);
+    for (int i = 0; i < group_size; i++) {
+        DupeEntry *entry = &group[i];
+        if (entry == target) {
+            printf("[keep] %s\n", entry->filepath);
+            continue;
+        }
+        if (!target->has_stat || !entry->has_stat) {
+            fprintf(stderr, "Skipping link for %s (missing stat info)\n", entry->filepath);
+            continue;
+        }
+        if (target->st.st_dev != entry->st.st_dev) {
+            fprintf(stderr, "Skipping cross-device link %s -> %s\n", entry->filepath, target->filepath);
+            continue;
+        }
+        if (dry_run) {
+            printf("[link] %s -> %s\n", entry->filepath, target->filepath);
+            continue;
+        }
+        if (unlink(entry->filepath) != 0) {
+            fprintf(stderr, "Error removing %s: %m\n", entry->filepath);
+            continue;
+        }
+        if (link(target->filepath, entry->filepath) != 0) {
+            fprintf(stderr, "Error linking %s -> %s: %m\n", entry->filepath, target->filepath);
+            continue;
+        }
+        printf("[linked] %s -> %s\n", entry->filepath, target->filepath);
+    }
+    printf("\n");
+}
+
+void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int dry_run) {
     const char *column = (type == DUPE_AUDIO) ? "audio_md5" : "md5";
     char *sql = NULL;
 
-    // Use asprintf to build the query dynamically
     if (asprintf(&sql, 
-        "SELECT t1.filepath, t1.%s "
+        "SELECT t1.filepath, t1.%s, t1.md5, t1.audio_md5, t1.filename, t1.extension, t1.filesize, t1.last_check_timestamp "
         "FROM files t1 "
         "JOIN ( "
         "    SELECT %s "
@@ -117,25 +242,64 @@ void print_duplicates(sqlite3 *db, int type, int min_count) {
     }
 
     char prev_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
-    int first = 1;
+    DupeEntry *group = NULL;
+    int group_size = 0;
+    int group_capacity = 0;
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         const char *filepath = (const char *)sqlite3_column_text(stmt, 0);
         const char *hash = (const char *)sqlite3_column_text(stmt, 1);
+        if (!hash || !filepath) continue;
 
-        if (!hash) continue;
-
-        if (!first && strcmp(hash, prev_hash) != 0) {
-            printf("\n"); // Space between groups
+        if (prev_hash[0] != '\0' && strcmp(hash, prev_hash) != 0) {
+            handle_group(group, group_size, link_mode, dry_run);
+            free_dupe_entries(group, group_size);
+            group = NULL;
+            group_size = 0;
+            group_capacity = 0;
         }
-        
-        // Print just the filename as requested? "output a list of filenames sorted by hash"
-        // Actually typically duplicate finders print the full path so you can act on them.
-        // User said "list of filenames", but context implies path. I'll print full path.
-        printf("%s\n", filepath);
-        
+
+        if (group_size == group_capacity) {
+            int new_cap = group_capacity == 0 ? 8 : group_capacity * 2;
+            DupeEntry *tmp = realloc(group, new_cap * sizeof(DupeEntry));
+            if (!tmp) {
+                fprintf(stderr, "Memory: Error reallocating group\n");
+                break;
+            }
+            group = tmp;
+            group_capacity = new_cap;
+        }
+
+        DupeEntry *entry = &group[group_size++];
+        memset(entry, 0, sizeof(DupeEntry));
+        entry->filepath = strdup(filepath);
+        entry->depth = path_depth(filepath);
+        strncpy(entry->hash, hash, sizeof(entry->hash) - 1);
+
+        const unsigned char *md5 = sqlite3_column_text(stmt, 2);
+        const unsigned char *audio = sqlite3_column_text(stmt, 3);
+        const unsigned char *fname = sqlite3_column_text(stmt, 4);
+        const unsigned char *ext = sqlite3_column_text(stmt, 5);
+        entry->filesize = sqlite3_column_int64(stmt, 6);
+        entry->last_check = sqlite3_column_int64(stmt, 7);
+        if (md5) strncpy(entry->md5, (const char *)md5, sizeof(entry->md5) - 1);
+        if (audio) strncpy(entry->audio_md5, (const char *)audio, sizeof(entry->audio_md5) - 1);
+        if (fname) strncpy(entry->filename, (const char *)fname, sizeof(entry->filename) - 1);
+        if (ext) strncpy(entry->extension, (const char *)ext, sizeof(entry->extension) - 1);
+
+        if (stat(entry->filepath, &entry->st) == 0) {
+            entry->has_stat = 1;
+        } else {
+            fprintf(stderr, "OS: Error stating %s: %m\n", entry->filepath);
+            entry->has_stat = 0;
+        }
+
         strncpy(prev_hash, hash, sizeof(prev_hash) - 1);
-        first = 0;
+    }
+
+    if (group_size > 0) {
+        handle_group(group, group_size, link_mode, dry_run);
+        free_dupe_entries(group, group_size);
     }
 
     sqlite3_finalize(stmt);
