@@ -5,3 +5,4 @@ fhash
 *.journal
 tests/workdir
 test_results.txt
+test_source/other_songs
