@@ -1,17 +1,19 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `src/`: Core C sources. `fhash.c` drives CLI argument handling and traversal; `utils.c` holds directory stack helpers; `hashing.c` wraps OpenSSL/FFmpeg hashing; `db.c` manages SQLite statements.  
-- `include/`: Corresponding headers shared across modules.  
-- `makefile`: Build targets for release, debug, install/uninstall, and cleanup.  
-- `README.md`: User-facing usage and dependency notes.
+- `src/`: Core C. `fhash.c` parses commands (`scan|dupe|link`), `utils.c` handles duplicate grouping/linking and path filtering, `hashing.c` wraps OpenSSL/FFmpeg hashing, `db.c` owns schema/version checks and transactions.  
+- `include/`: Headers for the above modules.  
+- `tests/`: `run_tests.sh` plus `README.md`; uses fixtures in `test_source/` to exercise scan/dupe/link.  
+- `test_source/`: Generated MP3 fixtures (identical, metadata-variant, 0-byte, bad-audio). `other_songs/` is ignored.  
+- `makefile`: Build/install/clean targets.  
+- `README.md`: Usage, DB schema, option descriptions.
 
 ## Build, Test, and Development Commands
-- `make`: Release build with `-O3 -Wall`; produces `./fhash`.  
-- `make debug`: Adds `-g -O0` for debugging symbols.  
-- `make clean`: Removes binaries, objects, and generated DBs.  
-- Run locally: `./fhash -s <path> -e mp3,flac -h -a -r -v -d ./file_hashes.db`.  
-- Install (if needed): `sudo make install` / `sudo make uninstall`. Ensure SQLite3, OpenSSL, and FFmpeg dev libraries are present before building.
+- `make` / `make debug` / `make clean` — build or clean; binary is `./fhash`.  
+- Quick scan example: `./fhash scan -s <path> -e mp3,flac -h -a -r -v -d ./file_hashes.db`.  
+- Duplicate listing: `./fhash dupe -xh2 -s <path> -r -e mp3`.  
+- Link dry-run: `./fhash link -xa2 -ls -s <path> -r -e mp3 -dry`.  
+- Tests: `./tests/run_tests.sh` (writes `test_results.txt`, recreates `tests/workdir/` each run).
 
 ## Coding Style & Naming Conventions
 - C code with 4-space indentation, no tabs; keep line length reasonable for readability.  
@@ -21,10 +23,9 @@
 - Build with `-Wall`; keep code warning-free. Keep portable `_GNU_SOURCE` needs in mind when adding system calls.
 
 ## Testing Guidelines
-- No automated test suite yet. Perform manual runs against small sample trees before large scans.  
-- Verify hashes and DB writes by querying: `sqlite3 file_hashes.db "SELECT COUNT(*) FROM files;"`.  
-- When adding features, script a reproducible command line in your PR (start path, extensions, flags) and capture expected stdout/stderr.  
-- If you add tests, mirror the build style in the makefile and place sources under `tests/` with clear fixture paths.
+- `tests/run_tests.sh` is the canonical smoke test; it scans fixtures, lists dupes by file/audio hash, runs link dry-run, and checks sentinel rows.  
+- Fixtures are regenerated into `tests/workdir/` each run; `test_results.txt` captures START/SUCCESS/FAILED markers.  
+- For new features, add focused steps to the script or mirror its pattern; keep outputs minimal and labeled.
 
 ## Commit & Pull Request Guidelines
 - Commit messages follow concise, present-tense summaries (see `git log`), e.g., “Fix format truncation warnings”.  
