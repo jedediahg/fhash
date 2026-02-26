@@ -94,6 +94,26 @@ Dry-run a dedupe using the shallowest path as the keeper:
 ./fhash -xh2 -ls -dry
 ```
 
+## Database Overview
+
+`fhash` stores results in a SQLite database with two tables:
+
+- `files`: Indexed items and their metadata.
+  - `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
+  - `md5` (TEXT): Full-file MD5 hash (or `Not calculated`).
+  - `audio_md5` (TEXT): Audio-only MD5 hash (or `Not calculated` / `N/A`).
+  - `filepath` (TEXT UNIQUE): Absolute path.
+  - `filename` (TEXT): Basename of the file.
+  - `extension` (TEXT): Extension without dot.
+  - `filesize` (INTEGER): Size in bytes.
+  - `last_check_timestamp` (TIMESTAMP): Last time `fhash` scanned/linked this entry.
+  - `filetype` (TEXT, 1 char): `F` = regular file, `L` = hard link, `D` = directory.
+- `sys`: Key/value metadata for the database.
+  - `version`: Application version recorded in the DB.
+  - `db_version`: Schema version recorded in the DB.
+
+`fhash` initializes `sys` on first run and validates `version`/`db_version` on startup before scanning or duplicate operations.
+
 ### Examples:
 
 **Index all MP3 and FLAC files in a folder, calculating both file and audio hashes:**
