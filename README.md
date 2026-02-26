@@ -64,7 +64,7 @@ sudo make uninstall
 - `-v`: Verbose output (default: OFF).
 - `scan` options: `-s <startpath>` (default `.`), `-e <extlist>`, `-r`, `-h`, `-a`, `-f`.
 - `dupe` options: `-xa<n>` (audio hash) or `-xh<n>` (file hash), optional min group size `n` (default 2).
-- `link` options: same as `dupe` plus `-l{mode}` to hard-link duplicates to a master selected as (`s`=shallowest path, `d`=deepest path, `m`=most metadata, `o`=oldest, `n`=newest).
+- `link` options: same as `dupe` plus `-l{mode}` to replace duplicates with hard-links to a master selected by mode (`s`=shallowest path, `d`=deepest path, `m`=most metadata, `o`=oldest, `n`=newest).
 - Shared options (all commands): `-e <extlist>` filter, `-s <startpath>` (with `-r` to include subdirectories) constrain duplicate queries, `-d <dbpath>` (default `./file_hashes.db`), `-v` verbose, `-dry` dry run.
 
 **Duplicate/Link notes**
