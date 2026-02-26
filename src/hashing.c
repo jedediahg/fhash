@@ -23,7 +23,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errbuf, sizeof(errbuf));
         fprintf(stderr, "FFmpeg: Error opening input file %s: %s\n", file_path, errbuf);
-        strncpy((char *)md5_hash, "Bad audio", MD5_DIGEST_LENGTH * 2 + 1);
+        memset(md5_hash, 0, MD5_DIGEST_LENGTH);
         return -1;
     }
 
@@ -32,14 +32,14 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         av_strerror(ret, errbuf, sizeof(errbuf));
         fprintf(stderr, "FFmpeg: Error finding stream info for %s: %s\n", file_path, errbuf);
         avformat_close_input(&fmt_ctx);
-        strncpy((char *)md5_hash, "Bad audio", MD5_DIGEST_LENGTH * 2 + 1);
+        memset(md5_hash, 0, MD5_DIGEST_LENGTH);
         return -1;
     }
 
     int audio_stream_idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
     if (audio_stream_idx < 0) {
         avformat_close_input(&fmt_ctx);
-        strncpy((char *)md5_hash, "Bad audio", MD5_DIGEST_LENGTH * 2 + 1);
+        memset(md5_hash, 0, MD5_DIGEST_LENGTH);
         return -1;
     }
 
@@ -47,7 +47,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
     if (!mdctx) {
         fprintf(stderr, "OpenSSL: Error creating MD context for %s\n", file_path);
         avformat_close_input(&fmt_ctx);
-        strncpy((char *)md5_hash, "Bad audio", MD5_DIGEST_LENGTH * 2 + 1);
+        memset(md5_hash, 0, MD5_DIGEST_LENGTH);
         return -1;
     }
 
@@ -55,7 +55,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         fprintf(stderr, "OpenSSL: Error initializing MD5 for %s\n", file_path);
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
-        strncpy((char *)md5_hash, "Bad audio", MD5_DIGEST_LENGTH * 2 + 1);
+        memset(md5_hash, 0, MD5_DIGEST_LENGTH);
         return -1;
     }
 
@@ -64,7 +64,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         fprintf(stderr, "FFmpeg: Error allocating packet for %s\n", file_path);
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
-        strncpy((char *)md5_hash, "Bad audio", MD5_DIGEST_LENGTH * 2 + 1);
+        memset(md5_hash, 0, MD5_DIGEST_LENGTH);
         return -1;
     }
 
@@ -75,7 +75,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
                 av_packet_free(&pkt);
                 EVP_MD_CTX_free(mdctx);
                 avformat_close_input(&fmt_ctx);
-                strncpy((char *)md5_hash, "Bad audio", MD5_DIGEST_LENGTH * 2 + 1);
+                memset(md5_hash, 0, MD5_DIGEST_LENGTH);
                 return -1;
             }
         }
@@ -89,7 +89,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         av_packet_free(&pkt);
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
-        strncpy((char *)md5_hash, "Bad audio", MD5_DIGEST_LENGTH * 2 + 1);
+        memset(md5_hash, 0, MD5_DIGEST_LENGTH);
         return -1;
     }
 
@@ -98,7 +98,7 @@ int calculate_audio_md5(const char *file_path, unsigned char *md5_hash) {
         av_packet_free(&pkt);
         EVP_MD_CTX_free(mdctx);
         avformat_close_input(&fmt_ctx);
-        strncpy((char *)md5_hash, "Bad audio", MD5_DIGEST_LENGTH * 2 + 1);
+        memset(md5_hash, 0, MD5_DIGEST_LENGTH);
         return -1;
     }
 

@@ -49,16 +49,14 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
         }
 
         if (hash_audio) {
-            unsigned char audio_md5_hash[MD5_DIGEST_LENGTH * 2 + 1] = {0};
             unsigned char raw_hash[MD5_DIGEST_LENGTH] = {0};
             if (calculate_audio_md5(file_path, raw_hash) != 0) {
-                snprintf((char *)audio_md5_hash, sizeof(audio_md5_hash), "Bad audio");
+                snprintf(audio_md5_string, sizeof(audio_md5_string), "Bad audio");
             } else {
                 for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
-                    snprintf((char *)&audio_md5_hash[i * 2], 3, "%02x", (unsigned int)raw_hash[i]);
+                    snprintf(&audio_md5_string[i * 2], 3, "%02x", (unsigned int)raw_hash[i]);
                 }
             }
-            snprintf(audio_md5_string, sizeof(audio_md5_string), "%s", audio_md5_hash);
         }
     }
 
