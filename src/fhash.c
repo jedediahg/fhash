@@ -43,13 +43,8 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
                 fprintf(stderr, "Error calculating MD5 hash for file: %s\n", file_path);
                 return 1;
             }
-
-            if (strcmp((char *)md5_hash, "0-byte-file") == 0) {
-                strncpy(md5_string, "0-byte-file", sizeof(md5_string));
-            } else {
-                for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
-                    snprintf(&md5_string[i * 2], 3, "%02x", (unsigned int)md5_hash[i]);
-                }
+            for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
+                snprintf(&md5_string[i * 2], 3, "%02x", (unsigned int)md5_hash[i]);
             }
         }
 
