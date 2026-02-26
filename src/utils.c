@@ -213,8 +213,10 @@ static void handle_group(sqlite3 *db, DupeEntry *group, int group_size, int link
 
         if (ts_stmt) {
             time_t now = time(NULL);
+            char ft[] = {'L', '\0'};
             sqlite3_bind_int64(ts_stmt, 1, now);
-            sqlite3_bind_text(ts_stmt, 2, entry->filepath, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(ts_stmt, 2, ft, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(ts_stmt, 3, entry->filepath, -1, SQLITE_TRANSIENT);
             if (sqlite3_step(ts_stmt) != SQLITE_DONE) {
                 fprintf(stderr, "SQL: Error updating timestamp for %s: %s\n", entry->filepath, sqlite3_errmsg(db));
             }
@@ -226,10 +228,12 @@ static void handle_group(sqlite3 *db, DupeEntry *group, int group_size, int link
             int64_t target_size = target->has_stat ? (int64_t)target->st.st_size : target->filesize;
             int64_t entry_size = entry->has_stat ? (int64_t)entry->st.st_size : entry->filesize;
             if (target_size != entry_size) {
+                char ft[] = {'L', '\0'};
                 sqlite3_bind_int64(size_stmt, 1, target_size);
                 sqlite3_bind_text(size_stmt, 2, target->md5, -1, SQLITE_TRANSIENT);
                 sqlite3_bind_int64(size_stmt, 3, time(NULL));
-                sqlite3_bind_text(size_stmt, 4, entry->filepath, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(size_stmt, 4, ft, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(size_stmt, 5, entry->filepath, -1, SQLITE_TRANSIENT);
                 if (sqlite3_step(size_stmt) != SQLITE_DONE) {
                     fprintf(stderr, "SQL: Error updating size/hash for %s: %s\n", entry->filepath, sqlite3_errmsg(db));
                 }
@@ -248,13 +252,13 @@ void process_duplicates(sqlite3 *db, int type, int min_count, int link_mode, int
     sqlite3_stmt *size_stmt = NULL;
 
     if (!dry_run && link_mode != LINK_NONE) {
-        const char *ts_sql = "UPDATE files SET last_check_timestamp = ? WHERE filepath = ?;";
+        const char *ts_sql = "UPDATE files SET last_check_timestamp = ?, filetype = ? WHERE filepath = ?;";
         if (sqlite3_prepare_v2(db, ts_sql, -1, &ts_stmt, NULL) != SQLITE_OK) {
             fprintf(stderr, "SQL: Error preparing timestamp update: %s\n", sqlite3_errmsg(db));
             return;
         }
         if (type == DUPE_AUDIO) {
-            const char *size_sql = "UPDATE files SET filesize = ?, md5 = ?, last_check_timestamp = ? WHERE filepath = ?;";
+            const char *size_sql = "UPDATE files SET filesize = ?, md5 = ?, last_check_timestamp = ?, filetype = ? WHERE filepath = ?;";
             if (sqlite3_prepare_v2(db, size_sql, -1, &size_stmt, NULL) != SQLITE_OK) {
                 fprintf(stderr, "SQL: Error preparing size/hash update: %s\n", sqlite3_errmsg(db));
                 sqlite3_finalize(ts_stmt);

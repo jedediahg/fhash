@@ -2,10 +2,103 @@
 #include "utils.h"
 #include "hashing.h"
 #include "db.h"
+#include "fhash.h"
 #include <sqlite3.h>
 #include <libavutil/log.h>
 
-int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sqlite3_stmt *update_stmt, int *file_count, int verbose, int hash_file, int hash_audio, int action) {
+const char *FHASH_VERSION = "1.0";
+const char *DB_VERSION = "1.0";
+
+static int ensure_filetype_column(sqlite3 *db) {
+    int has_column = 0;
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(files);", -1, &stmt, NULL) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char *col_name = sqlite3_column_text(stmt, 1);
+            if (col_name && strcmp((const char *)col_name, "filetype") == 0) {
+                has_column = 1;
+                break;
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
+    if (!has_column) {
+        if (sqlite3_exec(db, "ALTER TABLE files ADD COLUMN filetype TEXT DEFAULT 'F';", NULL, NULL, NULL) != SQLITE_OK) {
+            fprintf(stderr, "SQL error adding filetype column: %s\n", sqlite3_errmsg(db));
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int ensure_schema_and_version(sqlite3 *db) {
+    if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS sys (key TEXT PRIMARY KEY, value TEXT);", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error ensuring sys table: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+
+    int has_db_version = 0;
+    int has_version = 0;
+    char db_ver_buf[64] = {0};
+    char app_ver_buf[64] = {0};
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(db, "SELECT value FROM sys WHERE key = ?;", -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, "db_version", -1, SQLITE_STATIC);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char *val = sqlite3_column_text(stmt, 0);
+            if (val) {
+                has_db_version = 1;
+                strncpy(db_ver_buf, (const char *)val, sizeof(db_ver_buf) - 1);
+            }
+        }
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+
+        sqlite3_bind_text(stmt, 1, "version", -1, SQLITE_STATIC);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            has_version = 1;
+            const unsigned char *val = sqlite3_column_text(stmt, 0);
+            if (val) {
+                strncpy(app_ver_buf, (const char *)val, sizeof(app_ver_buf) - 1);
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    if (has_db_version) {
+        if (strcmp(db_ver_buf, DB_VERSION) != 0) {
+            fprintf(stderr, "Database version mismatch: db has %s, fhash requires %s\n", db_ver_buf, DB_VERSION);
+            return 1;
+        }
+    }
+    if (has_version) {
+        if (strcmp(app_ver_buf, FHASH_VERSION) != 0) {
+            fprintf(stderr, "fhash version mismatch recorded in DB: db has %s, binary is %s\n", app_ver_buf, FHASH_VERSION);
+            return 1;
+        }
+    } else {
+        char insert_sql[256];
+        snprintf(insert_sql, sizeof(insert_sql), "INSERT OR REPLACE INTO sys (key, value) VALUES ('version', '%s'), ('db_version', '%s');", FHASH_VERSION, DB_VERSION);
+        if (sqlite3_exec(db, insert_sql, NULL, NULL, NULL) != SQLITE_OK) {
+            fprintf(stderr, "SQL error inserting sys version rows: %s\n", sqlite3_errmsg(db));
+            return 1;
+        }
+    }
+
+    const char *create_files_sql = "CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, md5 TEXT, audio_md5 TEXT, filepath TEXT, filename TEXT, extension TEXT, filesize INTEGER, last_check_timestamp TIMESTAMP, filetype TEXT DEFAULT 'F', UNIQUE(filepath));";
+    if (sqlite3_exec(db, create_files_sql, NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error ensuring files table: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+
+    if (ensure_filetype_column(db) != 0) {
+        return 1;
+    }
+
+    return 0;
+}
+
+int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sqlite3_stmt *update_stmt, int *file_count, int verbose, int hash_file, int hash_audio, int action, char filetype) {
     if (action < 1 || action > 2){
         fprintf(stderr, "Invalid file action: %d\n", action);
         return 1;
@@ -76,6 +169,8 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
         sqlite3_bind_text(stmt, 5, extension, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 6, filesize);
         sqlite3_bind_int64(stmt, 7, current_time);
+        char ft_str[2] = {filetype, '\0'};
+        sqlite3_bind_text(stmt, 8, ft_str, -1, SQLITE_TRANSIENT);
     } else if (action == UPDATE_ACTION) {
         int param_idx = 1;
         if (hash_file) {
@@ -86,6 +181,8 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *bulk_stmt, sq
         }
         sqlite3_bind_int64(stmt, param_idx++, filesize);
         sqlite3_bind_int64(stmt, param_idx++, current_time);
+        char ft_str[2] = {filetype, '\0'};
+        sqlite3_bind_text(stmt, param_idx++, ft_str, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, param_idx++, file_path, -1, SQLITE_TRANSIENT);
     }
     if (sqlite3_step(stmt) != SQLITE_DONE) {
@@ -167,6 +264,8 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt
                 continue;
             }
 
+            char filetype = S_ISLNK(st.st_mode) ? 'L' : (S_ISDIR(st.st_mode) ? 'D' : 'F');
+
             if (S_ISREG(st.st_mode)) {
                 char *filename = entry->d_name;
                 char *extension = strrchr(filename, '.');
@@ -198,7 +297,7 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *bulk_stmt
                         sqlite3_clear_bindings(select_stmt);
 
                         if (action > 0) {
-                            if (process_file(file_path, db, bulk_stmt, update_stmt, file_count, verbose, hash_files, hash_audio, action) != 0) {
+                            if (process_file(file_path, db, bulk_stmt, update_stmt, file_count, verbose, hash_files, hash_audio, action, filetype) != 0) {
                                 fprintf(stderr, "Error processing file: %s\n", file_path);
                             } else {
                                 (*batch_count)++;
@@ -340,6 +439,10 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
         return 1;
     }
+    if (ensure_schema_and_version(db) != 0) {
+        sqlite3_close(db);
+        return 1;
+    }
 
     if (dupe_mode != 0) {
         process_duplicates(db, dupe_mode, min_dupes, link_mode, dry_run);
@@ -357,18 +460,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    char *sql = "CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, md5 TEXT, audio_md5 TEXT, filepath TEXT, filename TEXT, extension TEXT, filesize INTEGER, last_check_timestamp TIMESTAMP, UNIQUE(filepath));";
-    if (sqlite3_exec(db, sql, 0, 0, 0) != SQLITE_OK) {
-        fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        return 1;
-    }
-
     if (begin_transaction(db) != 0) {
         sqlite3_close(db);
         return 1;
     }
-    const char *bulk_insert_sql = "INSERT OR IGNORE INTO files (md5, audio_md5, filepath, filename, extension, filesize, last_check_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?);";
+    const char *bulk_insert_sql = "INSERT OR IGNORE INTO files (md5, audio_md5, filepath, filename, extension, filesize, last_check_timestamp, filetype) VALUES (?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt *bulk_stmt;
     if (sqlite3_prepare_v2(db, bulk_insert_sql, -1, &bulk_stmt, 0) != SQLITE_OK) {
         fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
@@ -388,7 +484,7 @@ int main(int argc, char *argv[]) {
         first = 0;
     }
     if (!first) strcat(sqlroot, ", ");
-    strcat(sqlroot, "filesize = ?, last_check_timestamp = ? WHERE filepath = ?;");
+    strcat(sqlroot, "filesize = ?, last_check_timestamp = ?, filetype = ? WHERE filepath = ?;");
 
     sqlite3_stmt *update_stmt;
     if (sqlite3_prepare_v2(db, sqlroot, -1, &update_stmt, NULL) != SQLITE_OK) {
