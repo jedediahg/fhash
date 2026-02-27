@@ -1,10 +1,12 @@
 #include "utils.h"
 #include "db.h"
+#include "fhash.h"
 #include <libavutil/log.h>
 
 static int verbose_global = 0;
 
 void help() {
+    printf("fhash version: %s (DB schema: %s)\n", FHASH_VERSION, DB_VERSION);
     printf("fhash scan [options]\n");
     printf("  -s <startpath>\tdirectory to scan (default .)\n");
     printf("  -e <extlist>\tcomma-separated extensions to include (e.g., mp3,flac)\n");

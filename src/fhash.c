@@ -299,7 +299,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (strcmp(argv[1], "-help") == 0) {
+    if (strcmp(argv[1], "-help") == 0 || strcmp(argv[1], "help") == 0) {
         help();
         return 0;
     }
@@ -309,6 +309,10 @@ int main(int argc, char *argv[]) {
     if (strcmp(argv[arg_index], "scan") == 0) command = CMD_SCAN;
     else if (strcmp(argv[arg_index], "dupe") == 0) command = CMD_DUPE;
     else if (strcmp(argv[arg_index], "link") == 0) command = CMD_LINK;
+    else if (strcmp(argv[arg_index], "help") == 0) {
+        help();
+        return 0;
+    }
     else {
         fprintf(stderr, "Unknown command: %s\n%s", argv[arg_index], USAGE_TEXT);
         return 1;
@@ -390,7 +394,7 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: Unknown -l mode '%c' (use s,d,m,o,n)\n", argv[arg_index][2]);
                     return 1;
             }
-        } else if (strcmp(argv[arg_index], "-help") == 0) {
+        } else if (strcmp(argv[arg_index], "-help") == 0 || strcmp(argv[arg_index], "help") == 0) {
             help();
             return 0;
         } else {
@@ -430,6 +434,10 @@ int main(int argc, char *argv[]) {
     }
 
     init_logging_callback(verbose);
+
+    if (verbose) {
+        printf("fhash version: %s (DB schema: %s)\n", FHASH_VERSION, DB_VERSION);
+    }
 
     sqlite3 *db;
     if (sqlite3_open(database_path, &db) != SQLITE_OK) {
