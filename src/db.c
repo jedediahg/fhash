@@ -69,6 +69,55 @@ static int ensure_audio_check_result_column(sqlite3 *db) {
     return 0;
 }
 
+static int migrate_db_1_0_to_1_01(sqlite3 *db) {
+    if (sqlite3_exec(db, "BEGIN TRANSACTION;", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error beginning migration transaction: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+
+    if (ensure_audio_check_result_column(db) != 0) {
+        sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+        return 1;
+    }
+
+    if (sqlite3_exec(db, "UPDATE files SET audio_check_result = 4 WHERE audio_check_result IS NULL;", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error setting default audio_check_result during migration: %s\n", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+        return 1;
+    }
+
+    if (sqlite3_exec(db, "UPDATE files SET audio_check_result = 1 WHERE md5 = '0-byte-file' OR audio_md5 = '0-byte-file';", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error backfilling 0-byte audio_check_result during migration: %s\n", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+        return 1;
+    }
+
+    if (sqlite3_exec(db, "UPDATE files SET audio_check_result = 3 WHERE md5 = 'Bad audio' OR audio_md5 = 'Bad audio';", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error backfilling bad-audio audio_check_result during migration: %s\n", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+        return 1;
+    }
+
+    char version_sql[256];
+    snprintf(version_sql, sizeof(version_sql),
+             "INSERT OR REPLACE INTO sys (key, value) VALUES "
+             "('version', '%s'), ('db_version', '%s');",
+             FHASH_VERSION, DB_VERSION);
+    if (sqlite3_exec(db, version_sql, NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error updating sys versions during migration: %s\n", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+        return 1;
+    }
+
+    if (sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error committing migration transaction: %s\n", sqlite3_errmsg(db));
+        sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+        return 1;
+    }
+
+    return 0;
+}
+
 int ensure_schema_and_version(sqlite3 *db) {
     if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS sys (key TEXT PRIMARY KEY, value TEXT);", NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "SQL error ensuring sys table: %s\n", sqlite3_errmsg(db));
@@ -104,8 +153,18 @@ int ensure_schema_and_version(sqlite3 *db) {
     sqlite3_finalize(stmt);
 
     if (has_db_version && strcmp(db_ver_buf, DB_VERSION) != 0) {
-        fprintf(stderr, "Database version mismatch: db has %s, fhash requires %s\n", db_ver_buf, DB_VERSION);
-        return 1;
+        if (strcmp(db_ver_buf, "1.0") == 0) {
+            if (migrate_db_1_0_to_1_01(db) != 0) {
+                return 1;
+            }
+            has_db_version = 1;
+            has_version = 1;
+            strncpy(db_ver_buf, DB_VERSION, sizeof(db_ver_buf) - 1);
+            strncpy(app_ver_buf, FHASH_VERSION, sizeof(app_ver_buf) - 1);
+        } else {
+            fprintf(stderr, "Database version mismatch: db has %s, fhash requires %s\n", db_ver_buf, DB_VERSION);
+            return 1;
+        }
     }
     if (has_version && strcmp(app_ver_buf, FHASH_VERSION) != 0) {
         fprintf(stderr, "fhash version mismatch recorded in DB: db has %s, binary is %s\n", app_ver_buf, FHASH_VERSION);

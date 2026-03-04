@@ -7,5 +7,6 @@
 - Finds duplicate groups by file hash and by audio hash (covers identical files and metadata-different copies).
 - Performs a link dry-run on the dupes folder (shows intended hardlinks without modifying files).
 - Confirms sentinel handling for `0-byte-file` and `Bad audio` cases.
+- Verifies 1.0 -> 1.01 DB migration adds `audio_check_result` and backfills legacy sentinel rows.
 
 The script writes annotated results to `test_results.txt` with clear START/SUCCESS/FAILED markers. Fixtures are copied into `tests/workdir/`, so reruns start from a clean slate.

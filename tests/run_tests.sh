@@ -6,6 +6,7 @@ OUT="${ROOT}/test_results.txt"
 WORK="${ROOT}/tests/workdir"
 SRC="${ROOT}/test_source"
 DB="${WORK}/test.db"
+MIG_DB="${WORK}/legacy_v1_0.db"
 
 echo "[INFO] Preparing test workspace..."
 rm -f "${OUT}"
@@ -74,5 +75,11 @@ run_step "incremental baseline md5" bash -lc "sqlite3 '${DB}' \"SELECT md5 FROM 
 run_step "mutate tracked file" bash -lc "printf 'x' >> '${WORK}/Hard Link Hearts.mp3'"
 run_step "incremental rescan without -f" "${ROOT}/fhash" scan -v -r -h -s "${WORK}" -e mp3 -d "${DB}"
 run_step "incremental md5 changed check" bash -lc "sqlite3 '${DB}' \"SELECT md5 FROM files WHERE filepath='${WORK}/Hard Link Hearts.mp3';\" > '${WORK}/md5_after.txt' && test -s '${WORK}/md5_after.txt' && ! cmp -s '${WORK}/md5_before.txt' '${WORK}/md5_after.txt'"
+
+# 7) Migration coverage: upgrade legacy 1.0 DB to 1.01 and backfill check results
+run_step "create legacy 1.0 DB fixture" sqlite3 "${MIG_DB}" "CREATE TABLE sys (key TEXT PRIMARY KEY, value TEXT); INSERT INTO sys(key, value) VALUES ('version','1.0'),('db_version','1.0'); CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, md5 TEXT, audio_md5 TEXT, filepath TEXT, filename TEXT, extension TEXT, filesize INTEGER, last_check_timestamp TIMESTAMP, modified_timestamp INTEGER DEFAULT 0, filetype TEXT DEFAULT 'F', UNIQUE(filepath)); INSERT INTO files(md5,audio_md5,filepath,filename,extension,filesize,last_check_timestamp,modified_timestamp,filetype) VALUES ('0-byte-file','0-byte-file','/legacy/zero.mp3','zero.mp3','mp3',0,0,0,'F'),('Not calculated','Bad audio','/legacy/bad.mp3','bad.mp3','mp3',123,0,0,'F'),('Not calculated','Not calculated','/legacy/unchecked.mp3','unchecked.mp3','mp3',321,0,0,'F');"
+run_step "trigger 1.0 -> 1.01 migration" "${ROOT}/fhash" check -s "${WORK}" -r -e mp3 -d "${MIG_DB}"
+run_step "migration schema/version checks" bash -lc "sqlite3 '${MIG_DB}' \"PRAGMA table_info(files);\" | grep -q '|audio_check_result|' && sqlite3 '${MIG_DB}' \"SELECT value FROM sys WHERE key='db_version';\" | grep -qx '1.01' && sqlite3 '${MIG_DB}' \"SELECT value FROM sys WHERE key='version';\" | grep -qx '1.01'"
+run_step "migration backfill checks" bash -lc "sqlite3 '${MIG_DB}' \"SELECT audio_check_result FROM files WHERE filepath='/legacy/zero.mp3';\" | grep -qx '1' && sqlite3 '${MIG_DB}' \"SELECT audio_check_result FROM files WHERE filepath='/legacy/bad.mp3';\" | grep -qx '3' && sqlite3 '${MIG_DB}' \"SELECT audio_check_result FROM files WHERE filepath='/legacy/unchecked.mp3';\" | grep -qx '4'"
 
 echo "[INFO] Results written to ${OUT}"

@@ -125,6 +125,7 @@ Dry-run a link pass using the shallowest path as the keeper, limited to `txt` fi
   - `db_version`: Schema version recorded in the DB.
 
 `fhash` initializes `sys` on first run and validates `version`/`db_version` on startup before `scan`, `check`, `dupe`, or `link`.
+When opening a legacy `1.0` DB, `fhash 1.01` migrates it in-place by adding `audio_check_result` (default `4` = not checked), then backfills legacy sentinels: any `0-byte-file` hash becomes `1`, and any `Bad audio` hash becomes `3`.
 
 ### Examples:
 
