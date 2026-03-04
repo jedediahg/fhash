@@ -47,6 +47,28 @@ static int ensure_modified_column(sqlite3 *db) {
     return 0;
 }
 
+static int ensure_audio_check_result_column(sqlite3 *db) {
+    int has_column = 0;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(files);", -1, &stmt, NULL) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char *col_name = sqlite3_column_text(stmt, 1);
+            if (col_name && strcmp((const char *)col_name, "audio_check_result") == 0) {
+                has_column = 1;
+                break;
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
+    if (!has_column) {
+        if (sqlite3_exec(db, "ALTER TABLE files ADD COLUMN audio_check_result INTEGER DEFAULT 4;", NULL, NULL, NULL) != SQLITE_OK) {
+            fprintf(stderr, "SQL error adding audio_check_result column: %s\n", sqlite3_errmsg(db));
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int ensure_schema_and_version(sqlite3 *db) {
     if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS sys (key TEXT PRIMARY KEY, value TEXT);", NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "SQL error ensuring sys table: %s\n", sqlite3_errmsg(db));
@@ -110,6 +132,7 @@ int ensure_schema_and_version(sqlite3 *db) {
         "last_check_timestamp TIMESTAMP, "
         "modified_timestamp INTEGER DEFAULT 0, "
         "filetype TEXT DEFAULT 'F', "
+        "audio_check_result INTEGER DEFAULT 4, "
         "UNIQUE(filepath)"
         ");";
     if (sqlite3_exec(db, create_files_sql, NULL, NULL, NULL) != SQLITE_OK) {
@@ -121,6 +144,9 @@ int ensure_schema_and_version(sqlite3 *db) {
         return 1;
     }
     if (ensure_modified_column(db) != 0) {
+        return 1;
+    }
+    if (ensure_audio_check_result_column(db) != 0) {
         return 1;
     }
 

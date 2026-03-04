@@ -8,12 +8,16 @@ static int verbose_global = 0;
 void help() {
     printf("fhash version: %s (DB schema: %s)\n", FHASH_VERSION, DB_VERSION);
     printf("fhash scan [options]\n");
+    printf("fhash check [options]\n");
     printf("  -s <startpath>\tdirectory to scan (default .)\n");
     printf("  -e <extlist>\tcomma-separated extensions to include (e.g., mp3,flac)\n");
     printf("  -r\t\trecurse directories\n");
     printf("  -h\t\tcalculate MD5 hash of files\n");
     printf("  -a\t\tcalculate MD5 hash of audio stream\n");
     printf("  -f\t\tforce re-index (update existing rows)\n");
+    printf("\n");
+    printf("check options: -s <startpath>, -e <extlist>, -r\n");
+    printf("  validates embedded audio stream and stores result in files.audio_check_result\n");
     printf("\n");
     printf("fhash dupe [options] (-xa<n> | -xh<n>)\n");
     printf("fhash link [options] (-xa<n> | -xh<n>) -l{mode}\n");

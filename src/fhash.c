@@ -7,8 +7,8 @@
 #include <libavutil/log.h>
 #include <ctype.h>
 
-const char *FHASH_VERSION = "1.0";
-const char *DB_VERSION = "1.0";
+const char *FHASH_VERSION = "1.01";
+const char *DB_VERSION = "1.01";
 
 static int ext_cmp(const void *a, const void *b) {
     const char *ea = *(const char *const *)a;
@@ -101,7 +101,7 @@ static int extension_allowed(const char *filename, char **ext_list, int ext_coun
     return bsearch(&extension_out, ext_list, (size_t)ext_count, sizeof(char *), ext_cmp) != NULL;
 }
 
-int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, sqlite3_stmt *lookup_stmt, int *file_count, int verbose, int hash_file, int hash_audio, int force_rescan, char filetype, const struct stat *st, const char *filename, const char *extension) {
+int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, sqlite3_stmt *lookup_stmt, int *file_count, int verbose, int hash_file, int hash_audio, int run_audio_check, int force_rescan, char filetype, const struct stat *st, const char *filename, const char *extension) {
     int64_t filesize = (int64_t)st->st_size;
     int64_t modified_timestamp = (int64_t)st->st_mtime;
     time_t current_time = time(NULL);
@@ -115,14 +115,17 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, 
             const unsigned char *db_type = sqlite3_column_text(lookup_stmt, 2);
             const unsigned char *db_md5 = sqlite3_column_text(lookup_stmt, 3);
             const unsigned char *db_audio_md5 = sqlite3_column_text(lookup_stmt, 4);
+            int db_audio_check = sqlite3_column_int(lookup_stmt, 5);
             int file_hash_ready = !hash_file || (db_md5 && strcmp((const char *)db_md5, "Not calculated") != 0);
             int audio_hash_ready = !hash_audio || (db_audio_md5 && strcmp((const char *)db_audio_md5, "Not calculated") != 0);
+            int audio_check_ready = !run_audio_check || (db_audio_check != AUDIO_CHECK_NOT_CHECKED);
 
             if (db_size == filesize &&
                 db_mtime == modified_timestamp &&
                 db_type && db_type[0] == (unsigned char)filetype &&
                 file_hash_ready &&
-                audio_hash_ready) {
+                audio_hash_ready &&
+                audio_check_ready) {
                 sqlite3_reset(lookup_stmt);
                 sqlite3_clear_bindings(lookup_stmt);
                 return 0;
@@ -140,12 +143,14 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, 
 
     char md5_string[MD5_DIGEST_LENGTH * 2 + 1] = {0};
     char audio_md5_string[MD5_DIGEST_LENGTH * 2 + 1] = {0};
+    int audio_check_result = AUDIO_CHECK_NOT_CHECKED;
     snprintf(md5_string, sizeof(md5_string), "Not calculated");
     snprintf(audio_md5_string, sizeof(audio_md5_string), "Not calculated");
 
     if (filesize == 0) {
         if (hash_file) strncpy(md5_string, "0-byte-file", sizeof(md5_string) - 1);
         if (hash_audio) strncpy(audio_md5_string, "0-byte-file", sizeof(audio_md5_string) - 1);
+        if (run_audio_check) audio_check_result = AUDIO_CHECK_NO_AUDIO_DATA;
     } else {
         if (hash_file) {
             unsigned char md5_hash[MD5_DIGEST_LENGTH];
@@ -168,6 +173,12 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, 
                 }
             }
         }
+
+        if (run_audio_check) {
+            if (validate_audio_stream(file_path, &audio_check_result) != 0) {
+                audio_check_result = AUDIO_CHECK_CORRUPTED_STREAM;
+            }
+        }
     }
 
     if (verbose) {
@@ -178,6 +189,9 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, 
         printf("\tExtension: %s\n", extension);
         printf("\tFilesize: %ld\n", (long)filesize);
         printf("\tTimestamp: %ld\n", (long)current_time);
+        if (run_audio_check) {
+            printf("\tAudio Check: %d (%s)\n", audio_check_result, audio_check_result_to_string(audio_check_result));
+        }
     }
 
     char ft_str[2] = {filetype, '\0'};
@@ -190,8 +204,10 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, 
     sqlite3_bind_int64(upsert_stmt, 7, current_time);
     sqlite3_bind_int64(upsert_stmt, 8, modified_timestamp);
     sqlite3_bind_text(upsert_stmt, 9, ft_str, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(upsert_stmt, 10, hash_file);
-    sqlite3_bind_int(upsert_stmt, 11, hash_audio);
+    sqlite3_bind_int(upsert_stmt, 10, audio_check_result);
+    sqlite3_bind_int(upsert_stmt, 11, hash_file);
+    sqlite3_bind_int(upsert_stmt, 12, hash_audio);
+    sqlite3_bind_int(upsert_stmt, 13, run_audio_check);
 
     if (sqlite3_step(upsert_stmt) != SQLITE_DONE) {
         fprintf(stderr, "SQL: Error executing statement for %s: %s\n", file_path, sqlite3_errmsg(db));
@@ -210,7 +226,7 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, 
     return 0;
 }
 
-int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, sqlite3_stmt *lookup_stmt, int *file_count, int verbose, const char *extensions_concatenated, int force_rescan, int *batch_count, int hash_files, int hash_audio, int recurse_dirs) {
+int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, sqlite3_stmt *lookup_stmt, int *file_count, int verbose, const char *extensions_concatenated, int force_rescan, int *batch_count, int hash_files, int hash_audio, int run_audio_check, int recurse_dirs) {
     DirStack *stack = create_dir_stack(STACK_SIZE);
     push_dir(stack, dir_path);
 
@@ -260,7 +276,7 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *upsert_st
             if (S_ISREG(st.st_mode)) {
                 char extension[64];
                 if (extension_allowed(entry->d_name, ext_list, ext_count, extension, sizeof(extension))) {
-                    if (process_file(file_path, db, upsert_stmt, lookup_stmt, file_count, verbose, hash_files, hash_audio, force_rescan, filetype, &st, entry->d_name, extension) != 0) {
+                    if (process_file(file_path, db, upsert_stmt, lookup_stmt, file_count, verbose, hash_files, hash_audio, run_audio_check, force_rescan, filetype, &st, entry->d_name, extension) != 0) {
                         fprintf(stderr, "Error processing file: %s\n", file_path);
                     } else {
                         (*batch_count)++;
@@ -304,11 +320,12 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    enum { CMD_UNKNOWN = 0, CMD_SCAN, CMD_DUPE, CMD_LINK } command = CMD_UNKNOWN;
+    enum { CMD_UNKNOWN = 0, CMD_SCAN, CMD_DUPE, CMD_LINK, CMD_CHECK } command = CMD_UNKNOWN;
     int arg_index = 1;
     if (strcmp(argv[arg_index], "scan") == 0) command = CMD_SCAN;
     else if (strcmp(argv[arg_index], "dupe") == 0) command = CMD_DUPE;
     else if (strcmp(argv[arg_index], "link") == 0) command = CMD_LINK;
+    else if (strcmp(argv[arg_index], "check") == 0) command = CMD_CHECK;
     else if (strcmp(argv[arg_index], "help") == 0) {
         help();
         return 0;
@@ -409,6 +426,15 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: duplicate/link flags not allowed with scan\n");
             return 1;
         }
+    } else if (command == CMD_CHECK) {
+        if (dupe_mode != 0 || link_mode != LINK_NONE) {
+            fprintf(stderr, "Error: duplicate/link flags not allowed with check\n");
+            return 1;
+        }
+        if (hash_files || hash_audio || force_rescan || dry_run) {
+            fprintf(stderr, "Error: scan/link flags are not valid in check mode\n");
+            return 1;
+        }
     } else if (command == CMD_DUPE) {
         if (dupe_mode == 0) {
             fprintf(stderr, "Error: dupe requires -xa or -xh\n");
@@ -490,11 +516,12 @@ int main(int argc, char *argv[]) {
     }
 
     const char *upsert_sql =
-        "INSERT INTO files (md5, audio_md5, filepath, filename, extension, filesize, last_check_timestamp, modified_timestamp, filetype) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "INSERT INTO files (md5, audio_md5, filepath, filename, extension, filesize, last_check_timestamp, modified_timestamp, filetype, audio_check_result) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(filepath) DO UPDATE SET "
         "md5 = CASE WHEN ? THEN excluded.md5 ELSE files.md5 END, "
         "audio_md5 = CASE WHEN ? THEN excluded.audio_md5 ELSE files.audio_md5 END, "
+        "audio_check_result = CASE WHEN ? THEN excluded.audio_check_result ELSE files.audio_check_result END, "
         "filename = excluded.filename, "
         "extension = excluded.extension, "
         "filesize = excluded.filesize, "
@@ -511,7 +538,7 @@ int main(int argc, char *argv[]) {
     }
 
     sqlite3_stmt *lookup_stmt = NULL;
-    const char *lookup_sql = "SELECT filesize, modified_timestamp, filetype, md5, audio_md5 FROM files WHERE filepath = ?;";
+    const char *lookup_sql = "SELECT filesize, modified_timestamp, filetype, md5, audio_md5, audio_check_result FROM files WHERE filepath = ?;";
     if (sqlite3_prepare_v2(db, lookup_sql, -1, &lookup_stmt, NULL) != SQLITE_OK) {
         fprintf(stderr, "Failed to prepare metadata lookup statement: %s\n", sqlite3_errmsg(db));
         sqlite3_finalize(upsert_stmt);
@@ -523,7 +550,8 @@ int main(int argc, char *argv[]) {
     int file_count = 0;
     int batch_count = 0;
 
-    if (process_directory(resolved_dir, db, upsert_stmt, lookup_stmt, &file_count, verbose, extensions_concatenated, force_rescan, &batch_count, hash_files, hash_audio, recurse_dirs) != 0) {
+    int run_audio_check = (command == CMD_CHECK);
+    if (process_directory(resolved_dir, db, upsert_stmt, lookup_stmt, &file_count, verbose, extensions_concatenated, force_rescan, &batch_count, hash_files, hash_audio, run_audio_check, recurse_dirs) != 0) {
         mainret = 1;
     }
 

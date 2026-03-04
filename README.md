@@ -10,6 +10,7 @@ A key feature of `fhash` is its ability to calculate the MD5 hash of **audio str
 - **SQLite Storage**: Saves file paths, sizes, timestamps, and hashes for easy querying.
 - **File Hashing**: Calculates standard MD5 hashes for the entire file.
 - **Audio Hashing**: Uses FFmpeg to extract and hash only the audio data, bypassing metadata.
+- **Audio Stream Validation**: `check` command decodes embedded audio streams to detect missing data/corruption.
 - **Batch Processing**: Uses SQLite transactions for high-speed indexing.
 - **Incremental Updates**: Uses file size + mtime to skip unchanged rows and updates changed files unless forced.
 
@@ -54,6 +55,7 @@ sudo make uninstall
 
 ```bash
 ./fhash scan [options]
+./fhash check [options]
 ./fhash dupe (-xa<n> | -xh<n>) [options]
 ./fhash link (-xa<n> | -xh<n>) -l{mode} [options]
 ```
@@ -63,9 +65,12 @@ sudo make uninstall
 - `-help`: Show help text.
 - `-v`: Verbose output (default: OFF).
 - `scan` options: `-s <startpath>` (default `.`), `-e <extlist>`, `-r`, `-h`, `-a`, `-f`.
+- `check` options: `-s <startpath>` (default `.`), `-e <extlist>`, `-r`. Validates embedded audio streams and stores integer results in `files.audio_check_result`.
 - `dupe` options: `-xa<n>` (audio hash) or `-xh<n>` (file hash), optional min group size `n` (default 2).
 - `link` options: same as `dupe` plus `-l{mode}` to replace duplicates with hard-links to a master selected by mode (`s`=shallowest path, `d`=deepest path, `m`=most metadata, `o`=oldest, `n`=newest).
-- Shared options (all commands): `-e <extlist>` filter, `-s <startpath>` (with `-r` to include subdirectories) constrain duplicate queries, `-d <dbpath>` (default `./file_hashes.db`), `-v` verbose, `-dry` dry run.
+- Shared options: `-d <dbpath>` (default `./file_hashes.db`), `-v` verbose.
+- Path filters (`scan`/`check`/`dupe`/`link`): `-s <startpath>`, `-r`, `-e <extlist>`.
+- `-dry` applies to `link` (and is accepted globally).
 
 **Duplicate/Link notes**
 - `dupe` and `link` commands use existing DB contents; they respect `-s`/`-r`/`-e` as filters on the query. Without `-r`, filtering by `-s` is limited to that directory only.
@@ -77,6 +82,11 @@ sudo make uninstall
 Scan and hash a music folder:
 ```bash
 ./fhash scan -s ~/Music -e mp3,flac -h -a -r
+```
+
+Validate embedded audio streams only:
+```bash
+./fhash check -s ~/Music -e mp3,flac -r
 ```
 
 List file-hash duplicates (min group 3) under a path:
@@ -104,11 +114,17 @@ Dry-run a link pass using the shallowest path as the keeper, limited to `txt` fi
   - `last_check_timestamp` (TIMESTAMP): Last time `fhash` scanned/linked this entry.
   - `modified_timestamp` (INTEGER): File modification time (`st_mtime`) seen during last scan.
   - `filetype` (TEXT, 1 char): `F` = regular file, `L` = hard link, `D` = directory.
+  - `audio_check_result` (INTEGER): Audio stream validation result enum.
+    - `0` = good
+    - `1` = no audio data
+    - `2` = missing chunks
+    - `3` = corrupted audio stream
+    - `4` = not checked
 - `sys`: Key/value metadata for the database.
   - `version`: Application version recorded in the DB.
   - `db_version`: Schema version recorded in the DB.
 
-`fhash` initializes `sys` on first run and validates `version`/`db_version` on startup before scanning or duplicate operations.
+`fhash` initializes `sys` on first run and validates `version`/`db_version` on startup before `scan`, `check`, `dupe`, or `link`.
 
 ### Examples:
 

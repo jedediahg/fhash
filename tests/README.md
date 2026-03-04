@@ -3,6 +3,7 @@
 `run_tests.sh` exercises the core workflows against generated sample MP3s in `test_source/`:
 
 - Scans the workspace copy with file+audio hashes and summarizes DB rows.
+- Runs `fhash check` to validate embedded audio streams and persist `audio_check_result`.
 - Finds duplicate groups by file hash and by audio hash (covers identical files and metadata-different copies).
 - Performs a link dry-run on the dupes folder (shows intended hardlinks without modifying files).
 - Confirms sentinel handling for `0-byte-file` and `Bad audio` cases.
