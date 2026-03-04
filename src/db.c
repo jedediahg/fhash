@@ -221,6 +221,10 @@ int ensure_schema_and_version(sqlite3 *db) {
         fprintf(stderr, "SQL error creating idx_files_extension: %s\n", sqlite3_errmsg(db));
         return 1;
     }
+    if (sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_files_audio_check_result ON files(audio_check_result);", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error creating idx_files_audio_check_result: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
 
     return 0;
 }

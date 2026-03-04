@@ -101,10 +101,97 @@ static int extension_allowed(const char *filename, char **ext_list, int ext_coun
     return bsearch(&extension_out, ext_list, (size_t)ext_count, sizeof(char *), ext_cmp) != NULL;
 }
 
-int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, sqlite3_stmt *lookup_stmt, int *file_count, int verbose, int hash_file, int hash_audio, int run_audio_check, int force_rescan, char filetype, const struct stat *st, const char *filename, const char *extension) {
+typedef struct {
+    dev_t dev;
+    ino_t ino;
+    int result;
+} InodeCheckEntry;
+
+typedef struct {
+    InodeCheckEntry *items;
+    size_t count;
+    size_t capacity;
+} InodeCheckCache;
+
+static void init_inode_cache(InodeCheckCache *cache) {
+    cache->items = NULL;
+    cache->count = 0;
+    cache->capacity = 0;
+}
+
+static void free_inode_cache(InodeCheckCache *cache) {
+    free(cache->items);
+    cache->items = NULL;
+    cache->count = 0;
+    cache->capacity = 0;
+}
+
+static int inode_cache_get(const InodeCheckCache *cache, dev_t dev, ino_t ino, int *result_out) {
+    for (size_t i = 0; i < cache->count; i++) {
+        if (cache->items[i].dev == dev && cache->items[i].ino == ino) {
+            *result_out = cache->items[i].result;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int inode_cache_put(InodeCheckCache *cache, dev_t dev, ino_t ino, int result) {
+    for (size_t i = 0; i < cache->count; i++) {
+        if (cache->items[i].dev == dev && cache->items[i].ino == ino) {
+            cache->items[i].result = result;
+            return 0;
+        }
+    }
+
+    if (cache->count == cache->capacity) {
+        size_t new_capacity = (cache->capacity == 0) ? 256 : (cache->capacity * 2);
+        InodeCheckEntry *new_items = realloc(cache->items, new_capacity * sizeof(InodeCheckEntry));
+        if (!new_items) {
+            fprintf(stderr, "Memory: failed to grow inode check cache\n");
+            return 1;
+        }
+        cache->items = new_items;
+        cache->capacity = new_capacity;
+    }
+
+    cache->items[cache->count].dev = dev;
+    cache->items[cache->count].ino = ino;
+    cache->items[cache->count].result = result;
+    cache->count++;
+    return 0;
+}
+
+static int hash_value_reusable(const char *value) {
+    return value &&
+           value[0] != '\0' &&
+           strcmp(value, "Not calculated") != 0 &&
+           strcmp(value, "N/A") != 0;
+}
+
+static int try_reuse_check_result_by_hash(sqlite3_stmt *stmt, const char *hash_value, int *result_out) {
+    if (!stmt || !hash_value_reusable(hash_value)) {
+        return 0;
+    }
+
+    sqlite3_bind_text(stmt, 1, hash_value, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);
+    int found = 0;
+    if (rc == SQLITE_ROW) {
+        *result_out = sqlite3_column_int(stmt, 0);
+        found = 1;
+    }
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    return found;
+}
+
+int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, sqlite3_stmt *lookup_stmt, sqlite3_stmt *reuse_md5_stmt, sqlite3_stmt *reuse_audio_md5_stmt, InodeCheckCache *inode_cache, int *file_count, int verbose, int hash_file, int hash_audio, int run_audio_check, int force_rescan, char filetype, const struct stat *st, const char *filename, const char *extension) {
     int64_t filesize = (int64_t)st->st_size;
     int64_t modified_timestamp = (int64_t)st->st_mtime;
     time_t current_time = time(NULL);
+    char db_md5_value[MD5_DIGEST_LENGTH * 2 + 32] = {0};
+    char db_audio_md5_value[MD5_DIGEST_LENGTH * 2 + 32] = {0};
 
     if (!force_rescan) {
         sqlite3_bind_text(lookup_stmt, 1, file_path, -1, SQLITE_TRANSIENT);
@@ -116,6 +203,8 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, 
             const unsigned char *db_md5 = sqlite3_column_text(lookup_stmt, 3);
             const unsigned char *db_audio_md5 = sqlite3_column_text(lookup_stmt, 4);
             int db_audio_check = sqlite3_column_int(lookup_stmt, 5);
+            if (db_md5) snprintf(db_md5_value, sizeof(db_md5_value), "%s", (const char *)db_md5);
+            if (db_audio_md5) snprintf(db_audio_md5_value, sizeof(db_audio_md5_value), "%s", (const char *)db_audio_md5);
             int file_hash_ready = !hash_file || (db_md5 && strcmp((const char *)db_md5, "Not calculated") != 0);
             int audio_hash_ready = !hash_audio || (db_audio_md5 && strcmp((const char *)db_audio_md5, "Not calculated") != 0);
             int audio_check_ready = !run_audio_check || (db_audio_check != AUDIO_CHECK_NOT_CHECKED);
@@ -175,8 +264,50 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, 
         }
 
         if (run_audio_check) {
-            if (validate_audio_stream(file_path, &audio_check_result) != 0) {
+            int reused = 0;
+
+            if (inode_cache && inode_cache_get(inode_cache, st->st_dev, st->st_ino, &audio_check_result)) {
+                reused = 1;
+                if (verbose) {
+                    printf("\tAudio Check Source: reused inode cache\n");
+                }
+            }
+
+            if (!reused && try_reuse_check_result_by_hash(reuse_md5_stmt, db_md5_value, &audio_check_result)) {
+                reused = 1;
+                if (verbose) {
+                    printf("\tAudio Check Source: reused by md5\n");
+                }
+            }
+
+            if (!reused && try_reuse_check_result_by_hash(reuse_audio_md5_stmt, db_audio_md5_value, &audio_check_result)) {
+                reused = 1;
+                if (verbose) {
+                    printf("\tAudio Check Source: reused by audio_md5\n");
+                }
+            }
+
+            if (!reused && strcmp(db_audio_md5_value, "Bad audio") == 0) {
                 audio_check_result = AUDIO_CHECK_CORRUPTED_STREAM;
+                reused = 1;
+                if (verbose) {
+                    printf("\tAudio Check Source: reused legacy Bad audio sentinel\n");
+                }
+            }
+
+            if (!reused) {
+                if (validate_audio_stream(file_path, &audio_check_result) != 0) {
+                    audio_check_result = AUDIO_CHECK_CORRUPTED_STREAM;
+                }
+                if (verbose) {
+                    printf("\tAudio Check Source: full decode\n");
+                }
+            }
+
+            if (inode_cache) {
+                if (inode_cache_put(inode_cache, st->st_dev, st->st_ino, audio_check_result) != 0) {
+                    fprintf(stderr, "Memory: failed to cache inode check result for %s\n", file_path);
+                }
             }
         }
     }
@@ -226,9 +357,11 @@ int process_file(const char *file_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, 
     return 0;
 }
 
-int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, sqlite3_stmt *lookup_stmt, int *file_count, int verbose, const char *extensions_concatenated, int force_rescan, int *batch_count, int hash_files, int hash_audio, int run_audio_check, int recurse_dirs) {
+int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *upsert_stmt, sqlite3_stmt *lookup_stmt, sqlite3_stmt *reuse_md5_stmt, sqlite3_stmt *reuse_audio_md5_stmt, int *file_count, int verbose, const char *extensions_concatenated, int force_rescan, int *batch_count, int hash_files, int hash_audio, int run_audio_check, int recurse_dirs) {
     DirStack *stack = create_dir_stack(STACK_SIZE);
     push_dir(stack, dir_path);
+    InodeCheckCache inode_cache;
+    init_inode_cache(&inode_cache);
 
     char **ext_list = NULL;
     int ext_count = 0;
@@ -276,7 +409,7 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *upsert_st
             if (S_ISREG(st.st_mode)) {
                 char extension[64];
                 if (extension_allowed(entry->d_name, ext_list, ext_count, extension, sizeof(extension))) {
-                    if (process_file(file_path, db, upsert_stmt, lookup_stmt, file_count, verbose, hash_files, hash_audio, run_audio_check, force_rescan, filetype, &st, entry->d_name, extension) != 0) {
+                    if (process_file(file_path, db, upsert_stmt, lookup_stmt, reuse_md5_stmt, reuse_audio_md5_stmt, &inode_cache, file_count, verbose, hash_files, hash_audio, run_audio_check, force_rescan, filetype, &st, entry->d_name, extension) != 0) {
                         fprintf(stderr, "Error processing file: %s\n", file_path);
                     } else {
                         (*batch_count)++;
@@ -288,6 +421,7 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *upsert_st
                             free(file_path);
                             closedir(dir);
                             free_extensions(ext_list, ext_count);
+                            free_inode_cache(&inode_cache);
                             destroy_dir_stack(stack);
                             return 1;
                         }
@@ -305,6 +439,7 @@ int process_directory(const char *dir_path, sqlite3 *db, sqlite3_stmt *upsert_st
     }
 
     free_extensions(ext_list, ext_count);
+    free_inode_cache(&inode_cache);
     destroy_dir_stack(stack);
     return 0;
 }
@@ -431,7 +566,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: duplicate/link flags not allowed with check\n");
             return 1;
         }
-        if (hash_files || hash_audio || force_rescan || dry_run) {
+        if (hash_files || hash_audio || dry_run) {
             fprintf(stderr, "Error: scan/link flags are not valid in check mode\n");
             return 1;
         }
@@ -547,11 +682,34 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    sqlite3_stmt *reuse_md5_stmt = NULL;
+    const char *reuse_md5_sql = "SELECT audio_check_result FROM files WHERE md5 = ? AND audio_check_result != 4 LIMIT 1;";
+    if (sqlite3_prepare_v2(db, reuse_md5_sql, -1, &reuse_md5_stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Failed to prepare md5 reuse statement: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(lookup_stmt);
+        sqlite3_finalize(upsert_stmt);
+        rollback_transaction(db);
+        sqlite3_close(db);
+        return 1;
+    }
+
+    sqlite3_stmt *reuse_audio_md5_stmt = NULL;
+    const char *reuse_audio_md5_sql = "SELECT audio_check_result FROM files WHERE audio_md5 = ? AND audio_check_result != 4 LIMIT 1;";
+    if (sqlite3_prepare_v2(db, reuse_audio_md5_sql, -1, &reuse_audio_md5_stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "Failed to prepare audio_md5 reuse statement: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(reuse_md5_stmt);
+        sqlite3_finalize(lookup_stmt);
+        sqlite3_finalize(upsert_stmt);
+        rollback_transaction(db);
+        sqlite3_close(db);
+        return 1;
+    }
+
     int file_count = 0;
     int batch_count = 0;
 
     int run_audio_check = (command == CMD_CHECK);
-    if (process_directory(resolved_dir, db, upsert_stmt, lookup_stmt, &file_count, verbose, extensions_concatenated, force_rescan, &batch_count, hash_files, hash_audio, run_audio_check, recurse_dirs) != 0) {
+    if (process_directory(resolved_dir, db, upsert_stmt, lookup_stmt, reuse_md5_stmt, reuse_audio_md5_stmt, &file_count, verbose, extensions_concatenated, force_rescan, &batch_count, hash_files, hash_audio, run_audio_check, recurse_dirs) != 0) {
         mainret = 1;
     }
 
@@ -565,6 +723,8 @@ int main(int argc, char *argv[]) {
 
     sqlite3_finalize(upsert_stmt);
     sqlite3_finalize(lookup_stmt);
+    sqlite3_finalize(reuse_md5_stmt);
+    sqlite3_finalize(reuse_audio_md5_stmt);
     sqlite3_close(db);
 
     if (verbose) {

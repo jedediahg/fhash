@@ -60,6 +60,7 @@ run_step "dupe by file hash" "${ROOT}/fhash" dupe -v -xh2 -s "${WORK}" -r -e mp3
 run_step "check audio streams" "${ROOT}/fhash" check -v -r -s "${WORK}" -e mp3 -d "${DB}"
 run_step "check results (audio_check_result summary)" sqlite3 "${DB}" "SELECT filename, audio_check_result FROM files ORDER BY filename;"
 run_step "check sentinel values (0-byte=1, all checked)" bash -lc "sqlite3 '${DB}' \"SELECT COUNT(*) FROM files WHERE extension='mp3' AND audio_check_result=4;\" | grep -qx '0' && sqlite3 '${DB}' \"SELECT audio_check_result FROM files WHERE filename='0bytes.mp3';\" | grep -qx '1'"
+run_step "check force re-run with -f" bash -lc "'${ROOT}/fhash' check -v -f -r -s '${WORK}' -e mp3 -d '${DB}' 2>&1 | tee '${WORK}/check_force.log' && grep -q 'Treated 12 files\\.' '${WORK}/check_force.log'"
 
 # 3) Audio-hash duplicates (should group take 2 variants with different metadata)
 run_step "dupe by audio hash" "${ROOT}/fhash" dupe -v -xa2 -s "${WORK}" -r -e mp3 -d "${DB}"

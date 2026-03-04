@@ -65,12 +65,21 @@ sudo make uninstall
 - `-help`: Show help text.
 - `-v`: Verbose output (default: OFF).
 - `scan` options: `-s <startpath>` (default `.`), `-e <extlist>`, `-r`, `-h`, `-a`, `-f`.
-- `check` options: `-s <startpath>` (default `.`), `-e <extlist>`, `-r`. Validates embedded audio streams and stores integer results in `files.audio_check_result`.
+- `check` options: `-s <startpath>` (default `.`), `-e <extlist>`, `-r`, `-f`. Validates embedded audio streams and stores integer results in `files.audio_check_result`. `-f` forces re-check even when previously checked.
 - `dupe` options: `-xa<n>` (audio hash) or `-xh<n>` (file hash), optional min group size `n` (default 2).
 - `link` options: same as `dupe` plus `-l{mode}` to replace duplicates with hard-links to a master selected by mode (`s`=shallowest path, `d`=deepest path, `m`=most metadata, `o`=oldest, `n`=newest).
 - Shared options: `-d <dbpath>` (default `./file_hashes.db`), `-v` verbose.
 - Path filters (`scan`/`check`/`dupe`/`link`): `-s <startpath>`, `-r`, `-e <extlist>`.
 - `-dry` applies to `link` (and is accepted globally).
+
+### Flag reference
+
+- `-r`: recurse into subdirectories for `scan`/`check`; for `dupe`/`link`, recurse within the `-s` path filter instead of matching only immediate children.
+- `-f`: force processing. In `scan`, re-index even if file size/mtime is unchanged. In `check`, force re-validation even if `audio_check_result` is already set.
+- `-a`: `scan` only. Calculate and store `audio_md5` (audio-stream MD5).
+- `-h`: `scan` only. Calculate and store `md5` (full-file MD5).
+- `-xa<n>`: `dupe`/`link` only. Use `audio_md5` to find duplicate groups, with optional minimum group size `n` (default `2`).
+- `-xh<n>`: `dupe`/`link` only. Use `md5` to find duplicate groups, with optional minimum group size `n` (default `2`).
 
 **Duplicate/Link notes**
 - `dupe` and `link` commands use existing DB contents; they respect `-s`/`-r`/`-e` as filters on the query. Without `-r`, filtering by `-s` is limited to that directory only.
